@@ -4,6 +4,74 @@ Concrete realization of req #3 (extensibility: beyond core USB debugging, also
 support USB class subsystems such as UAC/UVC). Each item is a self-contained
 module (see `docs/modules.md` for the authoring contract).
 
+## Strategic priorities (opinionated, what is most worth doing next)
+
+The foundation (modular core, CO-RE, CI, commit policy) is solid. The items
+below are ordered by impact on whether the project earns trust and adoption,
+not by where they sit in the phase plan. Layered: first earn credibility, then
+deliver the requirements already promised, then build the differentiator.
+
+### Tier 0 — establish credibility (cheap, highest trust impact)
+
+- [ ] **Fix `urb` status data correctness.** Completion events currently report
+      `st=-115` (`-EINPROGRESS`) for everything, which silently undermines the
+      whole tool. Root cause is the hook point: `__usb_hcd_giveback_urb(urb)`
+      sees `urb->status` before the final value lands. The authoritative status
+      is the 3rd arg of `usb_hcd_giveback_urb(hcd, urb, status)` — hook that and
+      read the arg instead of `urb->status`. Do this first.
+- [ ] **Graceful degradation / feature probing** (also under Cross-cutting:
+      CO-RE robustness). A missing kprobe target must skip+warn, not fail the
+      whole load. This is the real payoff of "one CO-RE binary across kernels".
+
+### Tier 1 — deliver requirements that are stated but not truly met
+
+- [ ] **Cross-arch that actually builds + is verified** (req #5:
+      arm32/arm64/x86/x64). The documented cross build currently fails on stock
+      toolchains: libbpf's sub-make uses `$(CROSS_COMPILE)cc` (only `-gcc`
+      exists), and arm64 BPF needs an arm64 `vmlinux.h` (kprobe `PT_REGS_*`
+      references `struct user_pt_regs`). Fix the `cc` issue, commit per-arch
+      `bpf/vmlinux/<arch>/vmlinux.h`, then re-add the cross job to CI.
+- [ ] **Runtime load testing in a VM matrix.** CI today only proves it compiles,
+      not that it loads/attaches. Borrow `third_party/libbpf/.github/actions/
+      vmtest` to `sudo ./usbtrace <mod>` across kernels/arches. "Passes the
+      verifier" is the real test for a CO-RE tool.
+
+### Tier 2 — the differentiator (why this over usbmon/trace-cmd)
+
+- [ ] **`diag` rule engine** (also in Phase 1). nettrace's value is conclusions +
+      evidence chains, not raw dumps. e.g. "disconnect preceded by N bulk errors
+      + an autosuspend → suspect link/power". The shared `usbtrace_event_hdr`
+      envelope already enables this. This is the core moat — invest here.
+- [ ] **Cross-module correlation / unified timeline.** Today only one module runs
+      at a time; real diagnosis needs enum+urb+lifecycle+power merged per device
+      (bus-dev) on one timeline via a single `hdr.kind`-routed consumer.
+
+### Tier 3 — breadth (req #3 explicit targets)
+
+- [ ] Class subsystems `uac`/`uvc`/`hid`/`storage` — high value but heavier;
+      tackle after Tier 0-2 so modules sit on a trustworthy base. (See Phase 2.)
+
+### Tier 4 — make it adoptable
+
+- [ ] **Release & packaging**: prebuilt static binaries per arch + semver tags +
+      GitHub Releases. BSP engineers want "drop one binary on the target". The
+      repo has no tags yet (`VERSION` comes from `git describe`).
+- [ ] **Stabilize the `--json` schema**: fix fields, add `ts_ns`/wall-clock,
+      document it as a contract since downstream tooling depends on it.
+- [ ] **Richer filters**: bus-port path, `comm`/pid, devnum, plus
+      `--duration/--count/-o file`.
+
+### Governance (low cost, long-term payoff)
+
+- [ ] Lightweight unit tests for pure user-space helpers (`usbtrace_json_escape`,
+      `check-commits.sh`).
+- [ ] CHANGELOG + semver tags, auto-generated from the Conventional Commits
+      history.
+
+**If only three things get done next:** (1) fix the status bug, (2) real
+multi-arch + VM load testing, (3) the `diag` rule engine. The first two answer
+"why trust it", the third answers "why use it instead of usbmon/trace-cmd".
+
 ## Phase 0 — foundation (done)
 
 - [x] Modular core + registry, ring-buffer event envelope (`usbtrace_event_hdr`)
