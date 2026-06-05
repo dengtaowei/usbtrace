@@ -5,6 +5,9 @@
 | Module | Status | Hooks | Purpose |
 |--------|--------|-------|---------|
 | `urb`  | demo / working | kprobe `usb_submit_urb`, `__usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Foundation for transfer-health diagnosis. |
+| `enum` | demo / working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
+| `lifecycle` | demo / working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
+| `power` | demo / working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
 
 ## Roadmap (planned modules)
 
@@ -12,9 +15,6 @@ Ordered by value for BSP / bring-up work (see project notes):
 
 | Module | Hooks (indicative) | Purpose |
 |--------|--------------------|---------|
-| `enum`    | `usb_alloc_dev`, `usb_set_device_state`, `hub_port_*`, `usb_probe_*` | Enumeration timeline: connect → GET_DESCRIPTOR → SET_ADDRESS → SET_CONFIG; where/why it fails. |
-| `lifecycle` | `usb_disconnect`, driver `probe`/`disconnect`, devnode add/remove | Connect/disconnect/reset root-cause, re-enumeration tracking. |
-| `power`   | `usb_autopm_*`, runtime suspend/resume vs URB activity | Autosuspend / resume-fail / remote-wakeup issues. |
 | `hcd`     | xhci/dwc3 ring + port state | Controller-level expert view (advanced). |
 | `gadget`  | `usb_ep_queue`, `usb_gadget_giveback_request`, `usb_gadget_set_state` | Device-side (UDC) request lifecycle. |
 | `uac`     | snd-usb-audio paths + isoc URBs | USB Audio Class: underrun/overrun, isoc scheduling. |
@@ -61,3 +61,32 @@ modules exist.
 For `foo.bpf.c`, the build emits `foo.skel.h` whose generated type is
 `struct foo_bpf` with `foo_bpf__open/load/attach/destroy`. Include it as
 `#include "foo.skel.h"`.
+
+## Shared helpers (reuse these, don't re-implement)
+
+User space — `#include "usbtrace/cli.h"`:
+
+- `struct usbtrace_filter` + `USBTRACE_FILTER_LONGOPTS` + `usbtrace_filter_getopt()`
+  — standard `--vid/--pid` parsing. In your `getopt_long` loop:
+  ```c
+  while ((c = getopt_long(argc, argv, "h", lo, NULL)) != -1) {
+      if (usbtrace_filter_getopt(c, optarg, &filt))
+          continue;
+      switch (c) { ... }
+  }
+  ```
+- `usbtrace_libbpf_print` — pass to `libbpf_set_print()` (honors `-v`).
+- `usbtrace_speed_str(speed)` — `enum usb_device_speed` → text.
+- `usbtrace_json` (global, set by `--json`) + `usbtrace_json_escape()` — when
+  `usbtrace_json` is set, emit one JSON object per line instead of text.
+
+BPF side — `#include "usbtrace/filter.bpf.h"` (after `vmlinux.h`):
+
+- `usbtrace_dev_match(dev, fvid, fpid, &vid, &pid)` — single CO-RE read of
+  `idVendor`/`idProduct` + the (vid,pid) match used by every module.
+
+## Output format
+
+Default is aligned human-readable text. The global `--json` flag (e.g.
+`sudo usbtrace --json power`) switches every module to JSON Lines, suitable for
+`jq`/scripts. Each line is a self-contained object keyed by `"event"`.

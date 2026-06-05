@@ -18,6 +18,7 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
+#include "usbtrace/filter.bpf.h"
 #include "urb.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -57,16 +58,9 @@ static __always_inline int urb_passes_filter(struct urb *urb, __u16 *vid_out,
 					     __u16 *pid_out)
 {
 	struct usb_device *dev = BPF_CORE_READ(urb, dev);
-	__u16 vid = BPF_CORE_READ(dev, descriptor.idVendor);
-	__u16 pid = BPF_CORE_READ(dev, descriptor.idProduct);
 
-	if (cfg.filter_vid && vid != cfg.filter_vid)
-		return 0;
-	if (cfg.filter_pid && pid != cfg.filter_pid)
-		return 0;
-	*vid_out = vid;
-	*pid_out = pid;
-	return 1;
+	return usbtrace_dev_match(dev, cfg.filter_vid, cfg.filter_pid, vid_out,
+				 pid_out);
 }
 
 static __always_inline void fill_common(struct urb_event *e, struct urb *urb,

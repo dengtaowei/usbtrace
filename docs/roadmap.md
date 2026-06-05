@@ -12,13 +12,16 @@ module (see `docs/modules.md` for the authoring contract).
 
 ## Phase 1 — core USB diagnosis (highest BSP value)
 
-- [ ] `enum` — enumeration timeline: `usb_alloc_dev`, `usb_set_device_state`,
-      `hub_port_*`, control GET_DESCRIPTOR/SET_ADDRESS/SET_CONFIG; flag where it
-      stalls/fails. (Fallback to kprobes when tracepoints absent.)
-- [ ] `lifecycle` — connect/disconnect/reset & re-enumeration root cause;
-      correlate `usb_disconnect` with preceding URB errors.
-- [ ] `power` — autosuspend/runtime-resume vs URB activity; resume-fail,
-      remote-wakeup issues.
+- [x] `enum` (demo) — enumeration timeline via kprobe `usb_set_device_state`:
+      emits each `old → new` state transition (NOTATTACHED → ... → CONFIGURED),
+      so a stall/failure is visible as "stuck before ADDRESS/CONFIGURED".
+      TODO: also fold in `hub_port_*` and control GET_DESCRIPTOR/SET_ADDRESS.
+- [x] `lifecycle` (demo) — connect/disconnect via kprobe `usb_new_device` /
+      `usb_disconnect`. TODO: reset tracking + correlate `usb_disconnect` with
+      preceding URB errors.
+- [x] `power` (demo) — autosuspend/autoresume via kprobe
+      `usb_autosuspend_device` / `usb_autoresume_device`. TODO: correlate with
+      URB activity; resume-fail and remote-wakeup issues.
 - [ ] `diag` mode — nettrace-style rule engine across modules (e.g. "disconnect
       preceded by N bulk errors → suspect link/power"). Output: conclusion +
       evidence chain, not raw dumps.
@@ -42,12 +45,15 @@ module (see `docs/modules.md` for the authoring contract).
 
 ## Cross-cutting requirements
 
-- **Output formats**: keep human-readable default; add `--json` for tooling and
-  a future TUI/canvas. All modules share the event-header envelope so a single
-  consumer/exporter can serve every module.
-- **Filtering**: standardize common filters across modules (`--vid/--pid`,
-  bus-port path, pid/comm, devnum) — factor into a shared helper when the 2nd
-  filtering module lands.
+- **Output formats**: [x] human-readable default + global `--json` (one JSON
+  object per event line) implemented across all modules via shared helpers in
+  `usbtrace/cli.h`. TODO: a single unified exporter (today each module emits its
+  own fields) and a future TUI/canvas consumer.
+- **Filtering**: [x] common `--vid/--pid` factored into shared helpers —
+  user-space `usbtrace_filter` + `USBTRACE_FILTER_LONGOPTS` /
+  `usbtrace_filter_getopt()` (`usbtrace/cli.h`) and BPF-side
+  `usbtrace_dev_match()` (`usbtrace/filter.bpf.h`). TODO: bus-port path,
+  pid/comm, devnum filters.
 - **Symbolization & stacks**: optional kernel stack capture for error paths
   (gated, off by default for low overhead).
 - **CO-RE robustness**: feature-probe optional kfuncs/tracepoints; degrade

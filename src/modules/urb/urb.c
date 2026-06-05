@@ -14,12 +14,12 @@
 
 #include "usbtrace/module.h"
 #include "usbtrace/log.h"
+#include "usbtrace/cli.h"
 #include "urb.h"
 #include "urb.skel.h"
 
 static struct {
-	unsigned int vid;
-	unsigned int pid;
+	struct usbtrace_filter filt;
 	bool emit_submit;
 } opts;
 
@@ -49,14 +49,14 @@ static void urb_usage(void)
 		"  --submit        also print submission records\n"
 		"  -h, --help      this help\n\n"
 		"Example:\n"
-		"  sudo usbtrace urb --vid 0x0403\n");
+		"  sudo usbtrace urb --vid 0x0403\n"
+		"  sudo usbtrace --json urb --vid 0x0403\n");
 }
 
 static int urb_parse_args(int argc, char **argv)
 {
 	static const struct option lo[] = {
-		{ "vid", required_argument, 0, 'V' },
-		{ "pid", required_argument, 0, 'P' },
+		USBTRACE_FILTER_LONGOPTS,
 		{ "submit", no_argument, 0, 's' },
 		{ "help", no_argument, 0, 'h' },
 		{ 0, 0, 0, 0 },
@@ -66,13 +66,9 @@ static int urb_parse_args(int argc, char **argv)
 	/* argv[0] is "urb"; let getopt scan from there. */
 	optind = 1;
 	while ((c = getopt_long(argc, argv, "h", lo, NULL)) != -1) {
+		if (usbtrace_filter_getopt(c, optarg, &opts.filt))
+			continue;
 		switch (c) {
-		case 'V':
-			opts.vid = strtoul(optarg, NULL, 0);
-			break;
-		case 'P':
-			opts.pid = strtoul(optarg, NULL, 0);
-			break;
 		case 's':
 			opts.emit_submit = true;
 			break;
@@ -83,6 +79,34 @@ static int urb_parse_args(int argc, char **argv)
 		}
 	}
 	return 0;
+}
+
+static void print_text(const struct urb_event *e, char dir)
+{
+	if (e->is_submit) {
+		printf("%-6s %-4s ep%-2u %c %5u B            %04x:%04x %u-%u %s\n",
+		       "SUBMIT", xfer_str(e->xfer_type), e->ep, dir, e->length,
+		       e->vid, e->product, e->busnum, e->devnum, e->comm);
+	} else {
+		printf("%-6s %-4s ep%-2u %c %5u/%-5u st=%-3d %6.1fus %04x:%04x %u-%u %s\n",
+		       "CMPLT", xfer_str(e->xfer_type), e->ep, dir, e->actual,
+		       e->length, e->status, e->latency_ns / 1000.0, e->vid,
+		       e->product, e->busnum, e->devnum, e->comm);
+	}
+}
+
+static void print_json(const struct urb_event *e)
+{
+	char comm[2 * USBTRACE_COMM_LEN + 1];
+
+	printf("{\"event\":\"%s\",\"type\":\"%s\",\"ep\":%u,\"dir\":\"%s\","
+	       "\"actual\":%u,\"length\":%u,\"status\":%d,\"latency_us\":%.1f,"
+	       "\"vid\":\"0x%04x\",\"pid\":\"0x%04x\",\"bus\":%u,\"dev\":%u,"
+	       "\"comm\":\"%s\"}\n",
+	       e->is_submit ? "submit" : "complete", xfer_str(e->xfer_type),
+	       e->ep, e->dir_in ? "in" : "out", e->actual, e->length, e->status,
+	       e->latency_ns / 1000.0, e->vid, e->product, e->busnum, e->devnum,
+	       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
 }
 
 static int handle_event(void *ctx, void *data, size_t len)
@@ -96,27 +120,11 @@ static int handle_event(void *ctx, void *data, size_t len)
 	if (e->hdr.kind != USBTRACE_EVT_URB || len < sizeof(*e))
 		return 0;
 
-	char dir = e->dir_in ? '<' : '>'; /* < IN (dev->host), > OUT */
-
-	if (e->is_submit) {
-		printf("%-6s %-4s ep%-2u %c %5u B            %04x:%04x %u-%u %s\n",
-		       "SUBMIT", xfer_str(e->xfer_type), e->ep, dir, e->length,
-		       e->vid, e->product, e->busnum, e->devnum, e->comm);
-	} else {
-		printf("%-6s %-4s ep%-2u %c %5u/%-5u st=%-3d %6.1fus %04x:%04x %u-%u %s\n",
-		       "CMPLT", xfer_str(e->xfer_type), e->ep, dir, e->actual,
-		       e->length, e->status, e->latency_ns / 1000.0, e->vid,
-		       e->product, e->busnum, e->devnum, e->comm);
-	}
+	if (usbtrace_json)
+		print_json(e);
+	else
+		print_text(e, e->dir_in ? '<' : '>'); /* < IN (dev->host), > OUT */
 	return 0;
-}
-
-static int libbpf_print(enum libbpf_print_level lvl, const char *fmt,
-			va_list args)
-{
-	if (lvl == LIBBPF_DEBUG && !usbtrace_verbose)
-		return 0;
-	return vfprintf(stderr, fmt, args);
 }
 
 static int urb_run(volatile bool *running)
@@ -125,7 +133,7 @@ static int urb_run(volatile bool *running)
 	struct ring_buffer *rb = NULL;
 	int err;
 
-	libbpf_set_print(libbpf_print);
+	libbpf_set_print(usbtrace_libbpf_print);
 
 	skel = urb_bpf__open();
 	if (!skel) {
@@ -133,8 +141,8 @@ static int urb_run(volatile bool *running)
 		return 1;
 	}
 
-	skel->rodata->cfg.filter_vid = (unsigned short)opts.vid;
-	skel->rodata->cfg.filter_pid = (unsigned short)opts.pid;
+	skel->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
+	skel->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
 	skel->rodata->cfg.emit_submit = opts.emit_submit ? 1 : 0;
 
 	err = urb_bpf__load(skel);
@@ -158,8 +166,10 @@ static int urb_run(volatile bool *running)
 	}
 
 	ut_info("tracing URBs... vid=0x%04x pid=0x%04x submit=%d (Ctrl-C to stop)",
-		opts.vid, opts.pid, opts.emit_submit);
-	printf("%-6s %-4s %-4s %s %s\n", "EVENT", "TYPE", "EP", "D", "BYTES ...");
+		opts.filt.vid, opts.filt.pid, opts.emit_submit);
+	if (!usbtrace_json)
+		printf("%-6s %-4s %-4s %s %s\n", "EVENT", "TYPE", "EP", "D",
+		       "BYTES ...");
 
 	while (*running) {
 		err = ring_buffer__poll(rb, 200 /* ms */);

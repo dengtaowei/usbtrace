@@ -21,6 +21,7 @@
 #endif
 
 int usbtrace_verbose;
+int usbtrace_json;
 
 static volatile bool g_running = true;
 
@@ -50,6 +51,7 @@ static void usage(const char *prog)
 		"  %s help [module]\n\n"
 		"Global options:\n"
 		"  -v, --verbose   verbose/debug logging\n"
+		"  -j, --json      emit one JSON object per event (machine-readable)\n"
 		"  -V, --version   print version and exit\n"
 		"  -h, --help      this help\n\n",
 		USBTRACE_VERSION, prog, prog, prog);
@@ -69,6 +71,8 @@ int main(int argc, char **argv)
 			break;
 		if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
 			usbtrace_verbose = 1;
+		} else if (!strcmp(a, "-j") || !strcmp(a, "--json")) {
+			usbtrace_json = 1;
 		} else if (!strcmp(a, "-V") || !strcmp(a, "--version")) {
 			printf("usbtrace %s\n", USBTRACE_VERSION);
 			return 0;

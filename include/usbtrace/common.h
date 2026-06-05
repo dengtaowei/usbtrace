@@ -24,6 +24,7 @@ enum usbtrace_event_kind {
 	USBTRACE_EVT_URB = 1,
 	USBTRACE_EVT_ENUM = 2,
 	USBTRACE_EVT_POWER = 3,
+	USBTRACE_EVT_LIFECYCLE = 4,
 	/* reserved for future modules: UAC/UVC/HID/storage ... */
 };
 
