@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Read-only token is enough; no job pushes or comments.
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same ref (e.g. force-push to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (native x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: make deps
+
+      - name: Check kernel BTF availability
+        run: |
+          if [ -r /sys/kernel/btf/vmlinux ]; then
+            echo "BTF present: /sys/kernel/btf/vmlinux"
+          else
+            echo "::warning::/sys/kernel/btf/vmlinux missing; vmlinux.h generation may fail"
+          fi
+
+      - name: Build
+        run: make
+
+      - name: Smoke test (module registry)
+        run: ./build/usbtrace list
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbtrace-x86_64
+          path: build/usbtrace
+          if-no-files-found: error
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/*.sh
+
+  commits:
+    name: commit messages
+    # Commit-message policy applies to the commits a PR introduces.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Conventional Commits
+        run: >-
+          scripts/check-commits.sh
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
