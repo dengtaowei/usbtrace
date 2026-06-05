@@ -5,8 +5,8 @@
  * Traces USB Request Block (URB) lifecycle at the two universal choke points
  * every host-controller driver funnels through:
  *
- *   usb_submit_urb(struct urb *urb, gfp_t mem_flags)   -> request queued
- *   __usb_hcd_giveback_urb(struct urb *urb)            -> request completed
+ *   usb_submit_urb(struct urb *urb, gfp_t mem_flags)       -> request queued
+ *   usb_hcd_giveback_urb(hcd, urb, status)                 -> request completed
  *
  * submit timestamps are stashed in a hash keyed by the urb pointer and paired
  * with the completion to compute submit->complete latency. CO-RE
@@ -112,8 +112,16 @@ int BPF_KPROBE(on_submit, struct urb *urb)
 	return 0;
 }
 
-SEC("kprobe/__usb_hcd_giveback_urb")
-int BPF_KPROBE(on_giveback, struct urb *urb)
+/*
+ * Hook usb_hcd_giveback_urb(hcd, urb, status) rather than the inner
+ * __usb_hcd_giveback_urb(urb): the authoritative completion status is the
+ * 'status' argument here. At __usb_hcd_giveback_urb entry urb->status is still
+ * -EINPROGRESS (it is assigned from urb->unlinked only just before calling the
+ * completion handler), which is why reading urb->status reported -115 (-EINPROGRESS)
+ * for every event.
+ */
+SEC("kprobe/usb_hcd_giveback_urb")
+int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
 {
 	__u16 vid = 0, pid = 0;
 	__u64 key = (__u64)urb;
@@ -151,7 +159,7 @@ int BPF_KPROBE(on_giveback, struct urb *urb)
 	e->hdr.ts_ns = now;
 	e->is_submit = 0;
 	e->latency_ns = tsp ? (now - *tsp) : 0;
-	e->status = BPF_CORE_READ(urb, status);
+	e->status = status;
 	e->actual = BPF_CORE_READ(urb, actual_length);
 	fill_common(e, urb, vid, pid);
 	bpf_ringbuf_submit(e, 0);

@@ -13,12 +13,12 @@ deliver the requirements already promised, then build the differentiator.
 
 ### Tier 0 — establish credibility (cheap, highest trust impact)
 
-- [ ] **Fix `urb` status data correctness.** Completion events currently report
-      `st=-115` (`-EINPROGRESS`) for everything, which silently undermines the
-      whole tool. Root cause is the hook point: `__usb_hcd_giveback_urb(urb)`
-      sees `urb->status` before the final value lands. The authoritative status
-      is the 3rd arg of `usb_hcd_giveback_urb(hcd, urb, status)` — hook that and
-      read the arg instead of `urb->status`. Do this first.
+- [x] **Fix `urb` status data correctness.** Completion events used to report
+      `st=-115` (`-EINPROGRESS`) for everything, which silently undermined the
+      whole tool. Root cause was the hook point: `__usb_hcd_giveback_urb(urb)`
+      sees `urb->status` before the final value lands. Fixed by hooking
+      `usb_hcd_giveback_urb(hcd, urb, status)` and reading the `status` arg
+      directly. Verified: status now reports `0`/`-32`/`-71`/`-2` etc.
 - [ ] **Graceful degradation / feature probing** (also under Cross-cutting:
       CO-RE robustness). A missing kprobe target must skip+warn, not fail the
       whole load. This is the real payoff of "one CO-RE binary across kernels".
