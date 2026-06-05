@@ -1,0 +1,13 @@
+定位：eBPF-based USB subsystem tracer and diagnostic tool for Linux BSP.
+参考：github 的 nettrace
+要求：
+1. 合适的目录结构的划分
+2. 合适的 libbpf 等库的版本选择
+3. 合适的组织架构，要易拓展，后续不仅要支持调试 USB 子系统，USB 相关的 UAC、UVC等都准备支持（要支持的模块AI可自行拓展重要模块）
+4. 最好能够模块化开发，需要支持什么内容，以模块的形式加入
+5. arm32/arm64/x86/x64都要支持
+6. 未来拓展方向见 docs/roadmap.md（req#3 的具体化）：
+   - 核心诊断：enum（枚举时间线）、lifecycle（插拔/重枚举根因）、power（PM）、diag（规则引擎）
+   - 类子系统：uac（USB Audio）、uvc（USB Video）、hid、storage(UAS/BOT)
+   - 控制器/设备侧：hcd（xhci/dwc3）、gadget（UDC）
+   - 横切：--json 输出、统一过滤器、可选栈回溯、CO-RE 特性探测、按架构预置 vmlinux.h、多内核/多架构 CI

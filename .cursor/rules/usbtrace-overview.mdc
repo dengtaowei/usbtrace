@@ -1,0 +1,39 @@
+---
+description: usbtrace project overview, goals, layout, and conventions
+alwaysApply: true
+---
+
+# usbtrace
+
+eBPF-based USB subsystem tracer & diagnostic tool for Linux BSP. Inspired by
+nettrace (tracks USB device lifecycle/URBs/power/class-traffic instead of skb).
+Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
+
+## Non-negotiable principles
+
+1. **Modular**: every capability is a self-contained module under
+   `src/modules/<name>/` (own `.bpf.c` + `.c` + `.h`). Adding a module must NOT
+   require editing core (`src/main.c`, `src/module.c`) or the Makefile.
+2. **CO-RE always**: in BPF code, access kernel structs only via
+   `BPF_CORE_READ(...)`. Never hardcode struct offsets. One source, all arches.
+3. **Portable arch**: never assume x86. `-D__TARGET_ARCH_$(ARCH)` is the only
+   arch knob; keep kprobe arg access via `BPF_KPROBE`/`PT_REGS_*` macros.
+4. **Vendored toolchain**: libbpf (v1.5.0) and bpftool are git submodules under
+   `third_party/`. Do not switch to system libbpf.
+
+## Layout
+
+- `src/main.c` — CLI: global opts + subcommand dispatch (`list`/`help`/<module>).
+- `src/module.c` + `include/usbtrace/module.h` — module registry (self-register
+  via `USBTRACE_MODULE_REGISTER`, constructor-based linked list).
+- `include/usbtrace/common.h` — BPF-safe shared types; every ring-buffer record
+  starts with `struct usbtrace_event_hdr { kind; size; ts_ns; }`.
+- `src/modules/urb/` — reference module (URB submit/complete + latency).
+- `docs/` — architecture, modules (+ roadmap), build. Keep these updated.
+
+## Conventions
+
+- License: GPL-2.0; every `.bpf.c` needs `char LICENSE[] SEC("license") = "GPL";`.
+- Events go through one `BPF_MAP_TYPE_RINGBUF` named `events`; route by `hdr.kind`.
+- Run requires root + kernel BTF (`/sys/kernel/btf/vmlinux`).
+- Build: `make deps` once, then `make`. See `usbtrace-build` rule for cross.

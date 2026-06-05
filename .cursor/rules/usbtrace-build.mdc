@@ -1,0 +1,38 @@
+---
+description: usbtrace build system and cross-compilation conventions
+globs: Makefile,scripts/**,third_party/**
+alwaysApply: false
+---
+
+# Build & cross-compile
+
+## Native
+
+```bash
+make deps     # clang/llvm/libelf-dev/zlib1g-dev + git submodules
+make          # -> build/usbtrace (+ ./usbtrace symlink)
+```
+
+## Cross (req #5: x86 / x86_64 / arm / arm64)
+
+```bash
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- VMLINUX_BTF=/path/target/vmlinux
+make ARCH=arm   CROSS_COMPILE=arm-linux-gnueabihf- VMLINUX_BTF=/path/target/vmlinux
+```
+
+## Invariants (do not break)
+
+- `ARCH` is normalized to `x86`/`arm`/`arm64`; auto-detected from `uname -m`.
+- **bpftool builds as a HOST tool** (`ARCH= CROSS_COMPILE=`): build-time only,
+  never cross it.
+- BPF object is CO-RE/arch-neutral; `-D__TARGET_ARCH_$(ARCH)` only selects
+  `PT_REGS_*`.
+- User binary uses `$(CROSS_COMPILE)gcc`; needs target `libelf`/`zlib`.
+- `vmlinux.h` resolution: `VMLINUX_BTF` > `bpf/vmlinux/<arch>/vmlinux.h` >
+  `/sys/kernel/btf/vmlinux`. For reproducible CI, commit per-arch headers.
+- Module discovery is automatic via `find src -name '*.bpf.c'/'*.c'`; keep new
+  modules inside `src/modules/<name>/` so they're picked up.
+
+## Debugging a load failure
+
+Run with `-v` for libbpf debug + verifier log; ensure root and BTF present.

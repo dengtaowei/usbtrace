@@ -1,0 +1,12 @@
+# build artifacts
+/build/
+/usbtrace
+
+# editor / OS
+*.o
+*.bpf.o
+*.tmp.bpf.o
+*.skel.h
+*.swp
+.DS_Store
+compile_commands.json

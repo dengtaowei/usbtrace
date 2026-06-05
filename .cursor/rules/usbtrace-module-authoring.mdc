@@ -1,0 +1,46 @@
+---
+description: How to write a usbtrace module (BPF + user space)
+globs: src/modules/**
+alwaysApply: false
+---
+
+# Authoring a usbtrace module
+
+A module = `src/modules/<name>/` with three files. The build auto-discovers
+`*.bpf.c` and `*.c`; no Makefile edits.
+
+## Files
+
+- `<name>.h` — shared kernel/user types. Include `"usbtrace/common.h"` and make
+  `struct usbtrace_event_hdr hdr;` the FIRST member of your event struct. Use
+  only fixed-width ints (BPF-safe).
+- `<name>.bpf.c` — BPF program. Required prologue:
+  ```c
+  #include "vmlinux.h"
+  #include <bpf/bpf_helpers.h>
+  #include <bpf/bpf_core_read.h>
+  #include <bpf/bpf_tracing.h>
+  #include "<name>.h"
+  char LICENSE[] SEC("license") = "GPL";
+  ```
+  Use a `BPF_MAP_TYPE_RINGBUF` named `events`. Read kernel fields ONLY via
+  `BPF_CORE_READ()`. Put user-tunable filters in `const volatile struct ... cfg;`.
+- `<name>.c` — user space. Include `"<name>.skel.h"`, implement `parse_args`/
+  `usage`/`run`, register via `USBTRACE_MODULE_REGISTER(<name>_module)`.
+
+## Skeleton naming
+
+`foo.bpf.c` → `foo.skel.h` with type `struct foo_bpf` and
+`foo_bpf__open/load/attach/destroy`.
+
+## run() contract
+
+`open → set rodata cfg → load → attach → ring_buffer__new → poll until
+*running==false → cleanup`. Always `__builtin_memset` reserved ring records
+before filling. Mirror `src/modules/urb/` as the canonical example.
+
+## Hook portability
+
+Prefer stable tracepoints when available; otherwise kprobes on USB core
+functions (`usb_submit_urb`, `__usb_hcd_giveback_urb`, `usb_disconnect`, ...).
+Guard for functions that may be absent on some kernels.
