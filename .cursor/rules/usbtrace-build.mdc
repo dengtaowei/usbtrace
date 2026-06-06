@@ -9,9 +9,12 @@ alwaysApply: false
 ## Native
 
 ```bash
-make deps     # clang/llvm/libelf-dev/zlib1g-dev + git submodules
+make deps     # clang/llvm/libelf-dev/zlib1g-dev/libssl-dev + git submodules
 make          # -> build/usbtrace (+ ./usbtrace symlink)
 ```
+
+Toolchain floor: **clang ≥ 12** (≥ 14 recommended); older clang mis-emits CO-RE
+BTF. On distros with an old default clang, build with `make CLANG=clang-12`.
 
 ## Cross (req #5: x86 / x86_64 / arm / arm64)
 

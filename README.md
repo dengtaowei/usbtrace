@@ -36,7 +36,9 @@ sudo ./usbtrace power     # trace autosuspend/autoresume
 sudo ./usbtrace --json power       # machine-readable JSON Lines (pipe to jq)
 ```
 
-Requires a kernel with BTF (`CONFIG_DEBUG_INFO_BTF=y`) and root to load BPF.
+Requires **clang ≥ 12** (≥ 14 recommended), a kernel with BTF
+(`CONFIG_DEBUG_INFO_BTF=y`), and root to load BPF. On older distros install a
+newer clang and build with `make CLANG=clang-12`.
 
 ## Example output
 

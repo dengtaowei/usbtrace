@@ -11,8 +11,12 @@ Vendored as git submodules (pinned):
 
 Host toolchain (install via `make deps` or `scripts/setup-deps.sh`):
 
-- `clang` + `llvm` (BPF target compilation; clang ≥ 11 recommended)
-- `libelf-dev`, `zlib1g-dev` (libbpf link deps)
+- `clang` + `llvm` — **clang ≥ 12 required, ≥ 14 recommended** (BPF target
+  compilation). clang 12 is the floor because earlier releases mis-emit BTF for
+  CO-RE; clang 10/11 only work if every `const volatile ... cfg` global is
+  zero-initialized (`= {}`). On Ubuntu 20.04: `apt install clang-12` then build
+  with `make CLANG=clang-12`.
+- `libelf-dev`, `zlib1g-dev`, `libssl-dev` (libbpf/bpftool link deps)
 - `gcc`, `make`, `pkg-config`
 - kernel with **BTF** (`/sys/kernel/btf/vmlinux`); check `CONFIG_DEBUG_INFO_BTF=y`
 
@@ -60,6 +64,8 @@ Notes:
 | Symptom | Fix |
 |---------|-----|
 | `clang: command not found` | `make deps` (or install clang) |
+| clang older than 12 | install `clang-12`+ and build with `make CLANG=clang-12` |
 | `no BTF source` during VMLINUX | enable `CONFIG_DEBUG_INFO_BTF`, or pass `VMLINUX_BTF=` |
+| `failed to find BTF info for global/extern symbol 'cfg'` | upgrade to clang ≥ 12 (preferred); or zero-init the global as `const volatile struct ... cfg = {};` |
 | `failed to load BPF skeleton` | run as root; verify BTF; check `dmesg` for verifier logs (`-v`) |
 | permission denied loading BPF | run with `sudo`; on locked-down systems `kernel.unprivileged_bpf_disabled=2` requires root |
