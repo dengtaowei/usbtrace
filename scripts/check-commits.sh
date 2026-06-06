@@ -66,7 +66,7 @@ Commit messages must follow Conventional Commits:
   <type>(<scope>)!: <description>
 
 Allowed types:  feat fix perf refactor docs build ci test chore style revert
-Scope (optional, usually a module): urb enum lifecycle power cli core build ci docs deps
+Scope (optional, usually a module): urb enum lifecycle power uvc uac hid storage diag class cli core build ci docs deps
 Subject length: <= 72 characters.
 
 Examples:

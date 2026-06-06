@@ -33,8 +33,8 @@ Every commit subject MUST follow
 - **type** (required), one of:
   `feat` `fix` `perf` `refactor` `docs` `build` `ci` `test` `chore` `style` `revert`
 - **scope** (optional, recommended): usually the module or area touched —
-  `urb` `enum` `lifecycle` `power` `cli` `core` `build` `ci` `docs` `deps`.
-  Multiple scopes may be comma-separated.
+  `urb` `enum` `lifecycle` `power` `uvc` `uac` `hid` `storage` `diag` `class`
+  `cli` `core` `build` `ci` `docs` `deps`. Multiple scopes may be comma-separated.
 - **!** (optional): marks a breaking change.
 - **description**: imperative mood, lower-case start, no trailing period.
 - Subject length: **<= 72 characters**.

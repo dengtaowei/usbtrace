@@ -4,10 +4,10 @@
 
 | Module | Status | Hooks | Purpose |
 |--------|--------|-------|---------|
-| `urb`  | demo / working | kprobe `usb_submit_urb`, `__usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Foundation for transfer-health diagnosis. |
-| `enum` | demo / working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
-| `lifecycle` | demo / working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
-| `power` | demo / working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
+| `urb`  | working | kprobe `usb_submit_urb`, `usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Foundation for transfer-health diagnosis. |
+| `enum` | working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
+| `lifecycle` | working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
+| `power` | working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
 | `diag`  | working | none (reuses urb/enum/lifecycle/power/class) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
 | `uvc`   | working | kprobe `uvc_video_complete` | USB Video Class streaming health (isoc errors / frame drops). Class-traffic module; see [class.md](class.md). |
 | `uac`   | working | kprobe `snd_complete_urb` | USB Audio Class streaming health (isoc errors / xruns, capture+playback). See [class.md](class.md). |
@@ -52,18 +52,45 @@ schema and how to extend the knowledge base.
      ```
      Use a `BPF_MAP_TYPE_RINGBUF` named `events`. Use `BPF_CORE_READ()` for all
      kernel struct field access (portability across arch/kernel).
-   - `<name>.c` — user space. Include `"<name>.skel.h"` (auto-generated),
-     implement `parse_args`/`usage`/`run`, then:
+   - `<name>.c` — user space. Include `"<name>.skel.h"` (auto-generated) and
+     `"usbtrace/run.h"`. Do NOT hand-roll the load/attach/poll loop — open the
+     skeleton, set `.rodata` config, and hand it to the shared `usbtrace_run()`
+     harness so every module behaves identically:
      ```c
+     static int <name>_run(volatile bool *running)
+     {
+         struct <name>_bpf *skel = <name>_bpf__open();
+         int rc;
+
+         if (!skel) { ut_err("failed to open BPF skeleton"); return 1; }
+         skel->rodata->cfg.filter_vid = (unsigned short)opts.vid;
+         skel->rodata->cfg.filter_pid = (unsigned short)opts.pid;
+
+         rc = usbtrace_run(&(struct usbtrace_run){
+             .skeleton = skel->skeleton,
+             .events   = skel->maps.events,
+             .on_event = handle_event,
+             .on_start = <name>_on_start,  /* optional: "tracing..." + header */
+         }, running);
+
+         <name>_bpf__destroy(skel);
+         return rc;
+     }
+
      static struct usbtrace_module <name>_module = {
          .name = "<name>", .summary = "...",
-         .parse_args = ..., .usage = ..., .run = ...,
+         .parse_args = ..., .usage = ..., .run = <name>_run,
      };
      USBTRACE_MODULE_REGISTER(<name>_module);
      ```
 3. Run `make`. The build auto-discovers `src/modules/*/*.bpf.c` and `*.c`,
    generates the skeleton, compiles and links it in. No Makefile edits needed.
 4. `./build/usbtrace list` should now show your module.
+
+> For a USB **class** driver (uvc/uac/hid/storage and friends), don't invent a
+> new event — hook the driver's URB-completion callback and reuse the
+> class-traffic foundation instead. It is far less code and gets `diag`
+> cooperation for free. See [class.md](class.md).
 
 > Cross-module consumers (like `diag`) may omit `.bpf.c` entirely and reuse other
 > modules' skeletons. They can include another module's shared header as
@@ -78,26 +105,35 @@ For `foo.bpf.c`, the build emits `foo.skel.h` whose generated type is
 
 ## Shared helpers (reuse these, don't re-implement)
 
+Run harness — `#include "usbtrace/run.h"`:
+
+- `usbtrace_run(&(struct usbtrace_run){...}, running)` — the one load → attach →
+  ring buffer → poll loop → teardown for every single-skeleton module. Optional
+  `on_start`/`on_stop` callbacks for a header line / exit summary. The module
+  only opens and destroys its skeleton (see "Adding a module" above).
+
 User space — `#include "usbtrace/cli.h"`:
 
-- `struct usbtrace_filter` + `USBTRACE_FILTER_LONGOPTS` + `usbtrace_filter_getopt()`
-  — standard `--vid/--pid` parsing. In your `getopt_long` loop:
-  ```c
-  while ((c = getopt_long(argc, argv, "h", lo, NULL)) != -1) {
-      if (usbtrace_filter_getopt(c, optarg, &filt))
-          continue;
-      switch (c) { ... }
-  }
-  ```
-- `usbtrace_libbpf_print` — pass to `libbpf_set_print()` (honors `-v`).
+- `usbtrace_filter_parse(argc, argv, &filt)` — full `--vid/--pid/--help` parser
+  for the common case; `parse_args` becomes a one-liner. For extra options, fold
+  `USBTRACE_FILTER_LONGOPTS` into your own `getopt_long` array and route each
+  option through `usbtrace_filter_getopt()` (see `urb`'s `--submit`).
 - `usbtrace_speed_str(speed)` — `enum usb_device_speed` → text.
 - `usbtrace_json` (global, set by `--json`) + `usbtrace_json_escape()` — when
   `usbtrace_json` is set, emit one JSON object per line instead of text.
+- `libbpf_set_print()` is already wired once in `main.c` (honors `-v`); modules
+  do NOT call it.
 
 BPF side — `#include "usbtrace/filter.bpf.h"` (after `vmlinux.h`):
 
 - `usbtrace_dev_match(dev, fvid, fpid, &vid, &pid)` — single CO-RE read of
   `idVendor`/`idProduct` + the (vid,pid) match used by every module.
+- Declare tunables as `const volatile struct <name>_config cfg = {};` — the
+  `= {}` initializer is required for correct BTF emission on clang ≤ 10.
+
+Class modules — `#include "usbtrace/class.h"` + `class_urb.bpf.h` (BPF) and
+`class_stream.h` (user). One normalized record + emit helper + event consumer
+shared by uvc/uac/hid/storage. See [class.md](class.md).
 
 ## Output format
 
