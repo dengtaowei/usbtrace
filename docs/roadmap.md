@@ -38,13 +38,17 @@ deliver the requirements already promised, then build the differentiator.
 
 ### Tier 2 — the differentiator (why this over usbmon/trace-cmd)
 
-- [ ] **`diag` rule engine** (also in Phase 1). nettrace's value is conclusions +
-      evidence chains, not raw dumps. e.g. "disconnect preceded by N bulk errors
-      + an autosuspend → suspect link/power". The shared `usbtrace_event_hdr`
-      envelope already enables this. This is the core moat — invest here.
-- [ ] **Cross-module correlation / unified timeline.** Today only one module runs
-      at a time; real diagnosis needs enum+urb+lifecycle+power merged per device
-      (bus-dev) on one timeline via a single `hdr.kind`-routed consumer.
+- [x] **`diag` rule engine** (also in Phase 1). nettrace's value is conclusions +
+      evidence chains, not raw dumps. Implemented as a cross-module consumer
+      (`src/modules/diag/`) driven by a YAML knowledge base; reuses the existing
+      probes, correlates per device, and emits conclusions + evidence live with a
+      summary at exit. See [diag.md](diag.md). TODO: more rules; deadline-rule
+      coverage for hub_port resets; per-rule tunables.
+- [x] **Cross-module correlation / unified timeline.** `diag` loads
+      enum+urb+lifecycle+power together and merges their ring buffers into one
+      poll loop, normalizing every record (`hdr.kind`-routed) onto a per-device
+      (bus-dev-vid-pid) timeline. TODO: expose the merged timeline as a
+      standalone view too (not just rule findings).
 
 ### Tier 3 — breadth (req #3 explicit targets)
 
@@ -90,9 +94,10 @@ multi-arch + VM load testing, (3) the `diag` rule engine. The first two answer
 - [x] `power` (demo) — autosuspend/autoresume via kprobe
       `usb_autosuspend_device` / `usb_autoresume_device`. TODO: correlate with
       URB activity; resume-fail and remote-wakeup issues.
-- [ ] `diag` mode — nettrace-style rule engine across modules (e.g. "disconnect
+- [x] `diag` mode — nettrace-style rule engine across modules (e.g. "disconnect
       preceded by N bulk errors → suspect link/power"). Output: conclusion +
-      evidence chain, not raw dumps.
+      evidence chain, not raw dumps. YAML knowledge base, live + summary; see
+      [diag.md](diag.md).
 
 ## Phase 2 — class subsystems (req #3 explicit targets)
 

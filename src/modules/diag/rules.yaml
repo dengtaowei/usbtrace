@@ -1,0 +1,71 @@
+# usbtrace diag knowledge base.
+#
+# Each rule correlates events from the urb/enum/lifecycle/power probes per
+# device (bus,dev) and emits a conclusion + suggested fix.
+#
+# Rule types:
+#   event    - a `trigger` event, then `when` lookback conditions over the
+#              device's recent-event window.
+#   deadline - a device reached `reached_state` but did not reach
+#              `without_state` within `timeout_ms` (checked periodically).
+#
+# Lookback condition fields:
+#   kind        urb | enum | power | lifecycle
+#   match       { field: value, ... }   equality on event fields
+#   status_in   [ ... ]                 urb->status is one of these
+#   within_ms   N                       only events within N ms before trigger
+#   count_gte   N                       need at least N matching events
+#
+# Template vars usable in conclusion/fix: {vid} {pid} {bus} {dev} {count}
+# {window} {comm}.
+#
+# Edit this file and pass it with: sudo usbtrace diag --rules ./rules.yaml
+
+rules:
+  - id: disconnect-after-errors
+    name: "Disconnect preceded by transfer errors"
+    severity: error
+    trigger: { kind: lifecycle, action: disconnect }
+    when:
+      - kind: urb
+        match: { is_submit: 0 }
+        status_in: [-71, -84, -110, -32, -19]   # EPROTO/EILSEQ/ETIMEDOUT/EPIPE/ENODEV
+        within_ms: 2000
+        count_gte: 3
+    conclusion: "Device {vid}:{pid} (bus{bus}-dev{dev}) disconnected after {count} transfer errors within {window}ms; suspect cable/link/power."
+    fix: "Check cable/connector and port power budget, reseat the device, try another port, and rule out EMI."
+
+  - id: autosuspend-mid-transfer
+    name: "Autosuspend during active transfers"
+    severity: warn
+    trigger: { kind: power, action: autosuspend }
+    when:
+      - kind: urb
+        match: { xfer_type: "!2" }   # exclude control (ep0 enumeration chatter)
+        within_ms: 200
+        count_gte: 2
+    conclusion: "Device {vid}:{pid} autosuspended while {count} data URB(s) were active in the last {window}ms; transfers may stall."
+    fix: "Disable runtime autosuspend for this device (power/control = on) or raise autosuspend_delay_ms."
+
+  - id: resume-storm
+    name: "Autoresume storm"
+    severity: warn
+    trigger: { kind: power, action: autoresume }
+    when:
+      - kind: power
+        match: { action: autoresume }
+        within_ms: 5000
+        count_gte: 5
+    conclusion: "Device {vid}:{pid} autoresumed {count} times within {window}ms; power state is thrashing."
+    fix: "Investigate the wakeup source / chatty driver; consider pinning power state or fixing remote-wakeup."
+
+  - id: enum-stall
+    name: "Enumeration stalled before CONFIGURED"
+    severity: error
+    deadline:
+      kind: enum
+      reached_state: ADDRESS
+      without_state: CONFIGURED
+      timeout_ms: 3000
+    conclusion: "Device {vid}:{pid} (bus{bus}-dev{dev}) reached ADDRESS but never CONFIGURED within {window}ms; enumeration stalled."
+    fix: "Check descriptor fetch / SET_CONFIGURATION; suspect power negotiation, marginal cable, or a flaky device controller."

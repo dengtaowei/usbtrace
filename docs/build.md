@@ -17,6 +17,7 @@ Host toolchain (install via `make deps` or `scripts/setup-deps.sh`):
   zero-initialized (`= {}`). On Ubuntu 20.04: `apt install clang-12` then build
   with `make CLANG=clang-12`.
 - `libelf-dev`, `zlib1g-dev`, `libssl-dev` (libbpf/bpftool link deps)
+- `libyaml-dev` (the `diag` module's YAML knowledge base parser; `-lyaml`)
 - `gcc`, `make`, `pkg-config`
 - kernel with **BTF** (`/sys/kernel/btf/vmlinux`); check `CONFIG_DEBUG_INFO_BTF=y`
 
@@ -64,6 +65,7 @@ Notes:
 | Symptom | Fix |
 |---------|-----|
 | `clang: command not found` | `make deps` (or install clang) |
+| `yaml.h: No such file` / `-lyaml` link error | install `libyaml-dev` (or `make deps`) |
 | clang older than 12 | install `clang-12`+ and build with `make CLANG=clang-12` |
 | `no BTF source` during VMLINUX | enable `CONFIG_DEBUG_INFO_BTF`, or pass `VMLINUX_BTF=` |
 | `failed to find BTF info for global/extern symbol 'cfg'` | upgrade to clang ≥ 12 (preferred); or zero-init the global as `const volatile struct ... cfg = {};` |

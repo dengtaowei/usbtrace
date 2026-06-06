@@ -8,6 +8,7 @@
 | `enum` | demo / working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
 | `lifecycle` | demo / working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
 | `power` | demo / working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
+| `diag`  | working | none (reuses urb/enum/lifecycle/power) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
 
 ## Roadmap (planned modules)
 
@@ -22,8 +23,9 @@ Ordered by value for BSP / bring-up work (see project notes):
 | `hid`     | `hid_input_report`, int URBs | HID report flow / latency. |
 
 `diag` mode (nettrace-style rule engine, e.g. "disconnect preceded by N bulk
-errors → suspect link/power") is a cross-cutting layer to add once 2–3 trace
-modules exist.
+errors → suspect link/power") is implemented as a cross-module consumer that
+reuses the tracing modules' BPF programs. See [diag.md](diag.md) for the rule
+schema and how to extend the knowledge base.
 
 ## Adding a module
 
@@ -55,6 +57,11 @@ modules exist.
 3. Run `make`. The build auto-discovers `src/modules/*/*.bpf.c` and `*.c`,
    generates the skeleton, compiles and links it in. No Makefile edits needed.
 4. `./build/usbtrace list` should now show your module.
+
+> Cross-module consumers (like `diag`) may omit `.bpf.c` entirely and reuse other
+> modules' skeletons. They can include another module's shared header as
+> `"<name>/<name>.h"` (the build adds `-Isrc/modules`) and its generated skeleton
+> as `"<name>.skel.h"`.
 
 ### Skeleton naming
 
