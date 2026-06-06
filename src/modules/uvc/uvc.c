@@ -40,6 +40,7 @@ static struct {
 static struct {
 	unsigned long done;
 	unsigned long seq_gaps;
+	unsigned long starved;
 	unsigned long wire_corr;
 	unsigned long long bytes;
 	unsigned long intervals;
@@ -48,6 +49,17 @@ static struct {
 	unsigned int min_interval_ns;
 	unsigned int max_interval_ns;
 } g_vbstats;
+
+static const char *vb2_op_str(__u8 op)
+{
+	switch (op) {
+	case UVC_VB2_QUEUE:	return "queue";
+	case UVC_VB2_QBUF:	return "qbuf";
+	case UVC_VB2_DQBUF:	return "dqbuf";
+	case UVC_VB2_STARVED:	return "starve";
+	default:		return "done";
+	}
+}
 
 static void uvc_usage(void)
 {
@@ -174,15 +186,19 @@ static int handle_frame(const struct uvc_frame_event *e, size_t len)
 
 static void tally_vb2(const struct uvc_vb2_event *e)
 {
-	g_vbstats.done++;
+	if (e->vb2_op == UVC_VB2_DONE)
+		g_vbstats.done++;
 	if (e->seq_gap)
 		g_vbstats.seq_gaps++;
+	if (e->starved || e->vb2_op == UVC_VB2_STARVED)
+		g_vbstats.starved++;
 	if (e->wire_to_vb2_ns) {
 		g_vbstats.wire_corr++;
 		g_vbstats.sum_wire_to_vb2_ns += e->wire_to_vb2_ns;
 	}
-	g_vbstats.bytes += e->bytesused;
-	if (e->interval_ns) {
+	if (e->vb2_op == UVC_VB2_DONE)
+		g_vbstats.bytes += e->bytesused;
+	if (e->vb2_op == UVC_VB2_DONE && e->interval_ns) {
 		g_vbstats.intervals++;
 		g_vbstats.sum_interval_ns += e->interval_ns;
 		if (!g_vbstats.min_interval_ns ||
@@ -199,29 +215,44 @@ static int handle_vb2(const struct uvc_vb2_event *e, size_t len)
 		return 0;
 	tally_vb2(e);
 
-	if (!g_ctx.all && !e->seq_gap)
+	if (!g_ctx.all && !e->seq_gap && !e->starved &&
+	    e->vb2_op != UVC_VB2_STARVED)
 		return 0;
 
 	if (usbtrace_json) {
 		char comm[2 * USBTRACE_COMM_LEN + 1];
 
-		printf("{\"event\":\"uvc_vb2\",\"sequence\":%u,\"seq_gap\":%u,"
+		printf("{\"event\":\"uvc_vb2\",\"op\":\"%s\",\"sequence\":%u,"
+		       "\"seq_gap\":%u,\"starved\":%u,"
+		       "\"num_buffers\":%u,\"queued\":%u,\"drv_owned\":%u,"
 		       "\"bytesused\":%u,\"interval_us\":%.1f,\"fps\":%.1f,"
 		       "\"wire_to_vb2_us\":%.1f,\"state\":%u,\"buf_index\":%u,"
 		       "\"vb2_ts\":%llu,\"vid\":\"0x%04x\",\"pid\":\"0x%04x\","
 		       "\"bus\":%u,\"dev\":%u,\"comm\":\"%s\"}\n",
-		       e->sequence, e->seq_gap, e->bytesused,
-		       e->interval_ns / 1000.0, fps_of(e->interval_ns),
-		       e->wire_to_vb2_ns / 1000.0, e->state, e->buf_index,
+		       vb2_op_str(e->vb2_op), e->sequence, e->seq_gap,
+		       e->starved, e->num_buffers, e->queued, e->drv_owned,
+		       e->bytesused, e->interval_ns / 1000.0,
+		       fps_of(e->interval_ns), e->wire_to_vb2_ns / 1000.0,
+		       e->state, e->buf_index,
 		       (unsigned long long)e->vb2_timestamp,
 		       e->vid, e->product, e->busnum, e->devnum,
 		       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
+	} else if (e->vb2_op == UVC_VB2_STARVED || e->starved) {
+		printf("vb2    STARVE pool=%u q=%u drv=%u  "
+		       "(wire frame, no queued buffer) %04x:%04x %u-%u\n",
+		       e->num_buffers, e->queued, e->drv_owned,
+		       e->vid, e->product, e->busnum, e->devnum);
+	} else if (e->vb2_op != UVC_VB2_DONE) {
+		printf("vb2    %-5s idx=%u pool=%u q=%u drv=%u %s\n",
+		       vb2_op_str(e->vb2_op), e->buf_index, e->num_buffers,
+		       e->queued, e->drv_owned, e->comm);
 	} else {
 		printf("vb2    %-4s seq=%-5u %7uB intv=%6.1fms fps=%5.1f "
-		       "w2v=%5.1fms idx=%u %s\n",
+		       "w2v=%5.1fms pool=%u q=%u drv=%u idx=%u %s\n",
 		       e->seq_gap ? "GAP" : "ok", e->sequence, e->bytesused,
 		       e->interval_ns / 1e6, fps_of(e->interval_ns),
-		       e->wire_to_vb2_ns / 1e6, e->buf_index, e->comm);
+		       e->wire_to_vb2_ns / 1e6, e->num_buffers, e->queued,
+		       e->drv_owned, e->buf_index, e->comm);
 	}
 	return 0;
 }
@@ -297,9 +328,10 @@ static void uvc_vb2_summary(void)
 
 	if (usbtrace_json) {
 		printf("{\"event\":\"uvc_vb2_summary\",\"done\":%lu,"
-		       "\"seq_gaps\":%lu,\"bytes\":%llu,\"avg_fps\":%.1f,"
-		       "\"min_fps\":%.1f,\"max_fps\":%.1f}\n",
-		       g_vbstats.done, g_vbstats.seq_gaps, g_vbstats.bytes,
+		       "\"seq_gaps\":%lu,\"starved\":%lu,\"bytes\":%llu,"
+		       "\"avg_fps\":%.1f,\"min_fps\":%.1f,\"max_fps\":%.1f}\n",
+		       g_vbstats.done, g_vbstats.seq_gaps, g_vbstats.starved,
+		       g_vbstats.bytes,
 		       fps_of((unsigned int)avg), fps_of(g_vbstats.max_interval_ns),
 		       fps_of(g_vbstats.min_interval_ns));
 		return;
@@ -309,8 +341,9 @@ static void uvc_vb2_summary(void)
 		"\n--- uvc vb2 summary ---\n"
 		"buffers done:    %lu\n"
 		"seq gaps:        %lu\n"
+		"starvation:      %lu\n"
 		"avg bytesused:   %llu B\n",
-		g_vbstats.done, g_vbstats.seq_gaps,
+		g_vbstats.done, g_vbstats.seq_gaps, g_vbstats.starved,
 		g_vbstats.done ? g_vbstats.bytes / g_vbstats.done : 0);
 	if (g_vbstats.intervals) {
 		fprintf(stderr,
@@ -342,9 +375,10 @@ static void uvc_gap_summary(void)
 	if (usbtrace_json) {
 		printf("{\"event\":\"uvc_gap_summary\",\"wire_fps\":%.1f,"
 		       "\"vb2_fps\":%.1f,\"wire_drops\":%lu,"
-		       "\"vb2_seq_gaps\":%lu,\"avg_wire_to_vb2_ms\":%.2f}\n",
+		       "\"vb2_seq_gaps\":%lu,\"vb2_starved\":%lu,"
+		       "\"avg_wire_to_vb2_ms\":%.2f}\n",
 		       wire_fps, vb2_fps, g_fstats.errored, g_vbstats.seq_gaps,
-		       wire_vb2_ms);
+		       g_vbstats.starved, wire_vb2_ms);
 	} else {
 		fprintf(stderr,
 			"\n--- uvc wire vs vb2 (gap analysis) ---\n"
@@ -352,9 +386,14 @@ static void uvc_gap_summary(void)
 			"vb2 fps (avg):       %.1f\n"
 			"wire drops:          %lu\n"
 			"vb2 seq gaps:        %lu\n"
+			"vb2 starvation:      %lu\n"
 			"wire->vb2 (avg):     %.2f ms  (%lu paired)\n",
 			wire_fps, vb2_fps, g_fstats.errored, g_vbstats.seq_gaps,
-			wire_vb2_ms, g_vbstats.wire_corr);
+			g_vbstats.starved, wire_vb2_ms, g_vbstats.wire_corr);
+		if (g_vbstats.starved)
+			fprintf(stderr,
+				"note: vb2 starvation — app may be slow to "
+				"QBUF; driver had no queued buffer at wire EOF.\n");
 		if (g_vbstats.seq_gaps && g_fstats.errored == 0)
 			fprintf(stderr,
 				"note: vb2 gaps with no wire drops — USB path "

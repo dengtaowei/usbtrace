@@ -54,6 +54,11 @@ struct diag_event {
 	uint32_t vb2_interval_ns;  /* prev vb2 done -> this done (FPS source) */
 	uint32_t wire_to_vb2_ns;   /* wire EOF -> vb2 done (0 = none) */
 	uint8_t vb2_seq_gap;	   /* 1 = kernel sequence gap */
+	uint8_t vb2_op;		   /* enum uvc_vb2_op */
+	uint8_t vb2_starved;	   /* 1 = no queued buffer at wire EOF */
+	uint16_t vb2_num_buffers;  /* queue pool size */
+	uint16_t vb2_queued;	   /* queued_count */
+	uint16_t vb2_drv_owned;    /* owned_by_drv_count */
 
 	/* enum-specific */
 	uint8_t old_state;

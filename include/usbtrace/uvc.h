@@ -54,11 +54,23 @@ struct uvc_frame_event {
 	char comm[USBTRACE_COMM_LEN];
 };
 
+/* vb2 ring-buffer record subtype (hdr.kind is always USBTRACE_EVT_UVC_VB2). */
+enum uvc_vb2_op {
+	UVC_VB2_DONE = 0,
+	UVC_VB2_QUEUE = 1,	/* driver took buffer from queued list (ACTIVE) */
+	UVC_VB2_QBUF = 2,	/* userspace VIDIOC_QBUF */
+	UVC_VB2_DQBUF = 3,	/* userspace VIDIOC_DQBUF */
+	UVC_VB2_STARVED = 4,	/* wire frame arrived, no queued buffer for driver */
+};
+
 /*
- * One videobuf2 buffer completion (stage 3). `sequence` is the kernel
+ * One videobuf2 buffer transition (stage 3). `sequence` is the kernel
  * vb2_v4l2_buffer.sequence when module BTF allows CO-RE; otherwise a per-queue
  * delivery ordinal. `seq_gap` is 1 when kernel sequence jumped (authoritative
  * vb2-side drop). `interval_ns` drives vb2-side FPS (prev done -> this done).
+ *
+ * `queued` / `drv_owned` / `num_buffers` are snapshots from struct vb2_queue
+ * (queued_count / owned_by_drv_count / num_buffers) for buffer-pool accounting.
  */
 struct uvc_vb2_event {
 	struct usbtrace_event_hdr hdr;	/* kind = USBTRACE_EVT_UVC_VB2 */
@@ -70,10 +82,14 @@ struct uvc_vb2_event {
 	__u32 interval_ns;
 	__u8  buf_index;	/* vb2_buffer->index */
 	__u8  seq_gap;		/* 1 = kernel sequence != last + 1 (see PR-2) */
-	__u8  _pad;
+	__u8  vb2_op;		/* enum uvc_vb2_op */
+	__u8  starved;		/* 1 = driver had no queued buffer (pool starved) */
+	__u16 num_buffers;	/* queue pool size */
+	__u16 queued;		/* queued_count: ready for driver */
+	__u16 drv_owned;	/* owned_by_drv_count: driver filling */
 	__u32 wire_to_vb2_ns;	/* recent wire EOF -> this vb2 done (0 = none) */
 
-	__u16 vid;		/* 0 until queue->device walk (PR-1) */
+	__u16 vid;		/* filled from stream_corr when wire-correlated */
 	__u16 product;
 	__u16 busnum;
 	__u16 devnum;

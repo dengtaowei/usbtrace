@@ -77,10 +77,20 @@ struct {
 struct vb2_qstate {
 	__u32 done_count;	/* delivery ordinal when kernel sequence absent */
 	__u64 last_done_ns;
+	__u64 last_starve_ns;	/* anti-spam for starvation events */
 	__u32 last_sequence;	/* previous kernel vb2 sequence (PR-2) */
 	__u8  have_last_seq;
 	__u8  _pad[3];
 };
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u32);	/* (bus << 16) | devnum */
+	__type(value, __u64);	/* vb2_queue * */
+} vb2_dev_queue SEC(".maps");
+
+#define VB2_STARVE_COOLDOWN_NS 100000000ULL	/* 100ms between starve emits */
 
 /* Kernel vb2_v4l2_buffer.sequence via embedded vb2_buf pointer (module BTF). */
 static __always_inline __u32 vb2_kernel_sequence(struct vb2_buffer *b, __u8 *ok)
@@ -183,6 +193,49 @@ static __always_inline void uvc_note_wire_frame(__u16 bus, __u16 devnum,
 	uvc_corr_store(devkey, vid, pid, bus, devnum, bytes, now);
 }
 
+static __always_inline __u8 vb2_is_capture(struct vb2_buffer *b)
+{
+	__u32 type;
+
+	if (!b)
+		return 0;
+	type = BPF_CORE_READ(b, type);
+	return type == VB2_TYPE_VIDEO_CAPTURE ||
+	       type == VB2_TYPE_VIDEO_CAPTURE_MPLANE;
+}
+
+static __always_inline void vb2_read_pool(struct vb2_queue *q,
+					  __u16 *num_buffers, __u16 *queued,
+					  __u16 *drv_owned)
+{
+	__u32 nb, qc;
+	int owned;
+
+	if (!q) {
+		*num_buffers = 0;
+		*queued = 0;
+		*drv_owned = 0;
+		return;
+	}
+	nb = BPF_CORE_READ(q, num_buffers);
+	qc = BPF_CORE_READ(q, queued_count);
+	owned = BPF_CORE_READ(q, owned_by_drv_count.counter);
+	*num_buffers = (__u16)nb;
+	*queued = (__u16)qc;
+	*drv_owned = (__u16)owned;
+}
+
+static __always_inline struct vb2_qstate *uvc_vb2_qstate(__u64 key)
+{
+	struct vb2_qstate init = {}, *st;
+
+	st = bpf_map_lookup_elem(&vb2_queues, &key);
+	if (st)
+		return st;
+	bpf_map_update_elem(&vb2_queues, &key, &init, BPF_ANY);
+	return bpf_map_lookup_elem(&vb2_queues, &key);
+}
+
 static __always_inline void uvc_vb2_fill_device(struct uvc_vb2_event *ve,
 						__u64 now)
 {
@@ -202,13 +255,98 @@ static __always_inline void uvc_vb2_fill_device(struct uvc_vb2_event *ve,
 	ve->devnum = corr->devnum;
 }
 
-static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
+static __always_inline void uvc_vb2_bind_dev(struct vb2_queue *q,
+					   __u16 bus, __u16 dev)
 {
-	struct vb2_qstate init = {}, *st;
-	struct vb2_queue *q;
+	__u32 dkey = ((__u32)bus << 16) | dev;
+	__u64 qkey = (__u64)(unsigned long)q;
+
+	if (!bus && !dev)
+		return;
+	bpf_map_update_elem(&vb2_dev_queue, &dkey, &qkey, BPF_ANY);
+}
+
+static __always_inline void uvc_vb2_submit(struct vb2_queue *q,
+					 struct vb2_buffer *b, __u8 op,
+					 __u8 state, __u8 starved, __u64 now,
+					 __u32 seq, __u8 seq_gap,
+					 __u32 interval, __u32 wire_to_vb2_ns)
+{
 	struct uvc_vb2_event *ve;
+	__u16 nb = 0, qu = 0, drv = 0;
+	__u32 bytesused = 0;
+
+	if (q)
+		vb2_read_pool(q, &nb, &qu, &drv);
+	if (b)
+		bytesused = BPF_CORE_READ(b, planes[0].bytesused);
+
+	ve = bpf_ringbuf_reserve(&events, sizeof(*ve), 0);
+	if (!ve)
+		return;
+	__builtin_memset(ve, 0, sizeof(*ve));
+	ve->hdr.kind = USBTRACE_EVT_UVC_VB2;
+	ve->hdr.size = sizeof(*ve);
+	ve->hdr.ts_ns = now;
+	ve->vb2_op = op;
+	ve->starved = starved;
+	ve->num_buffers = nb;
+	ve->queued = qu;
+	ve->drv_owned = drv;
+	ve->sequence = seq;
+	ve->seq_gap = seq_gap;
+	ve->interval_ns = interval;
+	ve->wire_to_vb2_ns = wire_to_vb2_ns;
+	ve->state = state;
+	if (b) {
+		ve->bytesused = bytesused;
+		ve->vb2_timestamp = BPF_CORE_READ(b, timestamp);
+		ve->buf_index = (__u8)BPF_CORE_READ(b, index);
+	}
+	uvc_vb2_fill_device(ve, now);
+	if (ve->busnum || ve->devnum)
+		uvc_vb2_bind_dev(q, ve->busnum, ve->devnum);
+	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
+	bpf_ringbuf_submit(ve, 0);
+}
+
+static __always_inline void uvc_check_starvation(__u16 bus, __u16 dev,
+						 __u64 now)
+{
+	__u32 dkey = ((__u32)bus << 16) | dev;
+	__u64 *qkeyp;
+	struct vb2_queue *q;
+	struct vb2_qstate *st;
+	__u16 nb, qu, drv;
+
+	if (!bus && !dev)
+		return;
+	qkeyp = bpf_map_lookup_elem(&vb2_dev_queue, &dkey);
+	if (!qkeyp)
+		return;
+	q = (struct vb2_queue *)(unsigned long)*qkeyp;
+	if (!q)
+		return;
+	vb2_read_pool(q, &nb, &qu, &drv);
+	if (qu > 0)
+		return;
+
+	st = uvc_vb2_qstate(*qkeyp);
+	if (!st)
+		return;
+	if (st->last_starve_ns &&
+	    now - st->last_starve_ns < VB2_STARVE_COOLDOWN_NS)
+		return;
+	st->last_starve_ns = now;
+	uvc_vb2_submit(q, NULL, UVC_VB2_STARVED, 0, 1, now, 0, 0, 0, 0);
+}
+
+static __always_inline void uvc_emit_vb2_done(struct vb2_buffer *b, __u8 state)
+{
+	struct vb2_qstate *st;
+	struct vb2_queue *q;
 	__u64 now, key;
-	__u32 bytesused, seq, interval = 0;
+	__u32 bytesused, seq, interval = 0, wire_to_vb2_ns = 0;
 	__u8 kernel_seq_ok = 0, seq_gap = 0;
 
 	if (state != VB2_BUF_STATE_DONE)
@@ -223,13 +361,9 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 		return;
 
 	key = (__u64)(unsigned long)q;
-	st = bpf_map_lookup_elem(&vb2_queues, &key);
-	if (!st) {
-		bpf_map_update_elem(&vb2_queues, &key, &init, BPF_ANY);
-		st = bpf_map_lookup_elem(&vb2_queues, &key);
-		if (!st)
-			return;
-	}
+	st = uvc_vb2_qstate(key);
+	if (!st)
+		return;
 
 	now = bpf_ktime_get_ns();
 	st->done_count++;
@@ -245,30 +379,24 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 	if (st->last_done_ns)
 		interval = (__u32)(now - st->last_done_ns);
 	st->last_done_ns = now;
+	wire_to_vb2_ns = uvc_wire_to_vb2_ns(now, bytesused);
+	uvc_vb2_submit(q, b, UVC_VB2_DONE, state, 0, now, seq, seq_gap,
+			interval, wire_to_vb2_ns);
+}
 
-	ve = bpf_ringbuf_reserve(&events, sizeof(*ve), 0);
-	if (!ve)
+static __always_inline void uvc_emit_vb2_xact(struct vb2_queue *q,
+					      struct vb2_buffer *b, __u8 op,
+					      __u8 state)
+{
+	__u64 now = bpf_ktime_get_ns();
+
+	if (!q || !b || !vb2_is_capture(b))
 		return;
-	__builtin_memset(ve, 0, sizeof(*ve));
-	ve->hdr.kind = USBTRACE_EVT_UVC_VB2;
-	ve->hdr.size = sizeof(*ve);
-	ve->hdr.ts_ns = now;
-	ve->sequence = seq;
-	ve->bytesused = bytesused;
-	ve->vb2_timestamp = BPF_CORE_READ(b, timestamp);
-	ve->state = state;
-	ve->interval_ns = interval;
-	ve->buf_index = (__u8)BPF_CORE_READ(b, index);
-	ve->seq_gap = seq_gap;
-	ve->wire_to_vb2_ns = uvc_wire_to_vb2_ns(now, bytesused);
-	uvc_vb2_fill_device(ve, now);
-	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
-	bpf_ringbuf_submit(ve, 0);
+	uvc_vb2_submit(q, b, op, state, 0, now, 0, 0, 0, 0);
 }
 
 /*
- * TP_PROTO(struct vb2_queue *q, struct vb2_buffer *vb) on both kernels; only
- * one tracepoint name exists per kernel generation (probe skips the other).
+ * TP_PROTO(struct vb2_queue *q, struct vb2_buffer *vb) on vb2 tracepoints.
  */
 static __always_inline int uvc_vb2_raw_done(struct bpf_raw_tracepoint_args *ctx)
 {
@@ -279,7 +407,23 @@ static __always_inline int uvc_vb2_raw_done(struct bpf_raw_tracepoint_args *ctx)
 	b = (struct vb2_buffer *)ctx->args[1];
 	if (!b)
 		return 0;
-	uvc_emit_vb2(b, VB2_BUF_STATE_DONE);
+	uvc_emit_vb2_done(b, VB2_BUF_STATE_DONE);
+	return 0;
+}
+
+static __always_inline int uvc_vb2_raw_qvb(struct bpf_raw_tracepoint_args *ctx,
+					   __u8 op, __u8 state)
+{
+	struct vb2_queue *q;
+	struct vb2_buffer *b;
+
+	if (cfg.no_vb2 || !ctx)
+		return 0;
+	q = (struct vb2_queue *)ctx->args[0];
+	b = (struct vb2_buffer *)ctx->args[1];
+	if (!q || !b)
+		return 0;
+	uvc_emit_vb2_xact(q, b, op, state);
 	return 0;
 }
 
@@ -293,6 +437,24 @@ SEC("raw_tracepoint/vb2_buf_done")
 int raw_vb2_buf_done(struct bpf_raw_tracepoint_args *ctx)
 {
 	return uvc_vb2_raw_done(ctx);
+}
+
+SEC("raw_tracepoint/vb2_buf_queue")
+int raw_vb2_buf_queue(struct bpf_raw_tracepoint_args *ctx)
+{
+	return uvc_vb2_raw_qvb(ctx, UVC_VB2_QUEUE, VB2_BUF_STATE_ACTIVE);
+}
+
+SEC("raw_tracepoint/vb2_qbuf")
+int raw_vb2_qbuf(struct bpf_raw_tracepoint_args *ctx)
+{
+	return uvc_vb2_raw_qvb(ctx, UVC_VB2_QBUF, VB2_BUF_STATE_QUEUED);
+}
+
+SEC("raw_tracepoint/vb2_dqbuf")
+int raw_vb2_dqbuf(struct bpf_raw_tracepoint_args *ctx)
+{
+	return uvc_vb2_raw_qvb(ctx, UVC_VB2_DQBUF, VB2_BUF_STATE_DEQUEUED);
 }
 
 static __always_inline __u32 le32(const __u8 *p)
@@ -337,6 +499,7 @@ uvc_emit_frame(struct uvc_stream_state *st, __u8 eof, __u16 vid, __u16 pid,
 		bpf_get_current_comm(&fe->comm, sizeof(fe->comm));
 		bpf_ringbuf_submit(fe, 0);
 		uvc_note_wire_frame(bus, dev, vid, pid, st->cur_bytes, now);
+		uvc_check_starvation(bus, dev, now);
 	}
 
 	/* reset for the next frame; keep last_frame_end_ts for interval */
