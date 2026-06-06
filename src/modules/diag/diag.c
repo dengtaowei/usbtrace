@@ -281,6 +281,25 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}
+	case USBTRACE_EVT_UVC_VB2: {
+		const struct uvc_vb2_event *e = data;
+
+		if (len < sizeof(*e))
+			return -1;
+		out->vid = e->vid;
+		out->pid = e->product;
+		out->busnum = e->busnum;
+		out->devnum = e->devnum;
+		out->cls = USBTRACE_CLASS_VIDEO;
+		out->actual = e->bytesused;
+		out->vb2_sequence = e->sequence;
+		out->vb2_bytesused = e->bytesused;
+		out->vb2_interval_ns = e->interval_ns;
+		out->vb2_seq_gap = e->seq_gap;
+		out->wire_to_vb2_ns = e->wire_to_vb2_ns;
+		memcpy(out->comm, e->comm, sizeof(out->comm));
+		break;
+	}
 	default:
 		return -1;
 	}

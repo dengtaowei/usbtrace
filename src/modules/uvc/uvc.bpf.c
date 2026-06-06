@@ -124,7 +124,11 @@ struct {
 struct stream_corr {
 	__u64 last_wire_done_ns;
 	__u32 last_wire_bytes;
-	__u32 _pad;	/* 16-byte map value; verifier rejects 12-byte stack spill */
+	__u16 vid;
+	__u16 pid;
+	__u16 busnum;
+	__u16 devnum;
+	__u32 _pad;	/* 24-byte map value for verifier */
 };
 
 struct {
@@ -151,7 +155,9 @@ static __always_inline __u32 uvc_wire_to_vb2_ns(__u64 now, __u32 bytesused)
 	return (__u32)delta;
 }
 
-static __always_inline void uvc_corr_store(__u32 key, __u32 bytes, __u64 now)
+static __always_inline void uvc_corr_store(__u32 key, __u16 vid, __u16 pid,
+					   __u16 bus, __u16 devnum,
+					   __u32 bytes, __u64 now)
 {
 	struct stream_corr init = {}, *c;
 
@@ -161,15 +167,39 @@ static __always_inline void uvc_corr_store(__u32 key, __u32 bytes, __u64 now)
 		return;
 	c->last_wire_done_ns = now;
 	c->last_wire_bytes = bytes;
+	c->vid = vid;
+	c->pid = pid;
+	c->busnum = bus;
+	c->devnum = devnum;
 }
 
 static __always_inline void uvc_note_wire_frame(__u16 bus, __u16 devnum,
+						__u16 vid, __u16 pid,
 						__u32 bytes, __u64 now)
 {
 	__u32 gkey = 0, devkey = ((__u32)bus << 16) | devnum;
 
-	uvc_corr_store(gkey, bytes, now);
-	uvc_corr_store(devkey, bytes, now);
+	uvc_corr_store(gkey, vid, pid, bus, devnum, bytes, now);
+	uvc_corr_store(devkey, vid, pid, bus, devnum, bytes, now);
+}
+
+static __always_inline void uvc_vb2_fill_device(struct uvc_vb2_event *ve,
+						__u64 now)
+{
+	struct stream_corr *corr;
+	__u32 key = 0;
+	__u64 delta;
+
+	corr = bpf_map_lookup_elem(&stream_corr, &key);
+	if (!corr || !corr->last_wire_done_ns)
+		return;
+	delta = now - corr->last_wire_done_ns;
+	if (delta > WIRE_VB2_MAX_NS)
+		return;
+	ve->vid = corr->vid;
+	ve->product = corr->pid;
+	ve->busnum = corr->busnum;
+	ve->devnum = corr->devnum;
 }
 
 static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
@@ -231,6 +261,7 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 	ve->buf_index = (__u8)BPF_CORE_READ(b, index);
 	ve->seq_gap = seq_gap;
 	ve->wire_to_vb2_ns = uvc_wire_to_vb2_ns(now, bytesused);
+	uvc_vb2_fill_device(ve, now);
 	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
 	bpf_ringbuf_submit(ve, 0);
 }
@@ -305,7 +336,7 @@ uvc_emit_frame(struct uvc_stream_state *st, __u8 eof, __u16 vid, __u16 pid,
 		fe->ep = ep;
 		bpf_get_current_comm(&fe->comm, sizeof(fe->comm));
 		bpf_ringbuf_submit(fe, 0);
-		uvc_note_wire_frame(bus, dev, st->cur_bytes, now);
+		uvc_note_wire_frame(bus, dev, vid, pid, st->cur_bytes, now);
 	}
 
 	/* reset for the next frame; keep last_frame_end_ts for interval */

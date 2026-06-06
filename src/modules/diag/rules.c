@@ -24,7 +24,7 @@ struct symbol {
 /* kind names (enum usbtrace_event_kind). */
 static const struct symbol kind_syms[] = {
 	{ "urb", 1 }, { "enum", 2 }, { "power", 3 }, { "lifecycle", 4 },
-	{ "class", 5 }, { "uvc_frame", 6 },
+	{ "class", 5 }, { "uvc_frame", 6 }, { "uvc_vb2", 7 },
 	{ NULL, 0 },
 };
 
@@ -63,6 +63,11 @@ static const struct symbol field_syms[] = {
 	{ "frame_bytes", F_FRAME_BYTES },
 	{ "frame_interval_ns", F_FRAME_INTERVAL },
 	{ "frame_errored", F_FRAME_ERRORED },
+	{ "vb2_sequence", F_VB2_SEQUENCE },
+	{ "vb2_seq_gap", F_VB2_SEQ_GAP },
+	{ "vb2_bytesused", F_VB2_BYTESUSED },
+	{ "vb2_interval_ns", F_VB2_INTERVAL },
+	{ "wire_to_vb2_ns", F_WIRE_TO_VB2_NS },
 	{ NULL, 0 },
 };
 

@@ -337,11 +337,11 @@ same time window.
 
 **PR-4 — diag integration**
 
-- [ ] `diag.c` `normalize()` case for `USBTRACE_EVT_UVC_VB2`
-- [ ] Engine fields: `vb2_sequence`, `vb2_seq_gap`, `vb2_bytesused`,
+- [x] `diag.c` `normalize()` case for `USBTRACE_EVT_UVC_VB2`
+- [x] Engine fields: `vb2_sequence`, `vb2_seq_gap`, `vb2_bytesused`,
       `wire_to_vb2_ns`
-- [ ] Evidence printer (like `uvc_frame`: show seq/bytes/interval/gap)
-- [ ] Example rules in `rules.yaml`:
+- [x] Evidence printer (like `uvc_frame`: show seq/bytes/interval/gap)
+- [x] Example rules in `rules.yaml`:
 
   ```yaml
   - id: video-vb2-drops
@@ -353,7 +353,7 @@ same time window.
         match: { vb2_seq_gap: 1 }
         within_ms: 3000
         count_gte: 3
-    conclusion: "Video device {vid}:{pid} lost {count} vb2 frames (sequence gaps) within {window}ms; USB wire may be fine — suspect driver queue or host scheduling."
+    conclusion: "Video device {vid}:{pid} saw {count} vb2 sequence gap(s) within {window}ms; USB wire may be fine — suspect driver queue or host scheduling."
     fix: "Check buffer count in the capturing app, CPU load, and whether other processes hold vb2 buffers."
 
   - id: video-wire-ok-vb2-drops
@@ -369,12 +369,11 @@ same time window.
         match: { vb2_seq_gap: 1 }
         within_ms: 3000
         count_gte: 3
-    conclusion: "Device {vid}:{pid}: wire frames look clean but vb2 dropped {count} frames — not a USB/cable issue."
+    conclusion: "Device {vid}:{pid}: USB wire frames look clean within {window}ms but vb2 sequence gaps detected — not a USB/cable issue."
   ```
 
-  Cross-kind rules like `video-wire-ok-vb2-drops` are the payoff of gap analysis;
-  they may need engine tweaks if multi-kind `when` is not yet expressive enough —
-  ship `video-vb2-drops` first.
+  Cross-kind rules like `video-wire-ok-vb2-drops` are the payoff of gap analysis:
+  wire health (`uvc_frame`) and vb2 drops (`uvc_vb2`) correlated per device.
 
 #### Pitfalls
 

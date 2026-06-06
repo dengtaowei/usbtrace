@@ -78,6 +78,7 @@ static const char *kind_str(uint32_t k)
 	case 4: return "lifecycle";
 	case 5: return "class";
 	case 6: return "uvc_frame";
+	case 7: return "uvc_vb2";
 	default: return "?";
 	}
 }
@@ -110,6 +111,11 @@ static long ev_field_val(const struct diag_event *e, enum diag_field f)
 	case F_FRAME_BYTES:    return e->frame_bytes;
 	case F_FRAME_INTERVAL: return e->frame_interval_ns;
 	case F_FRAME_ERRORED:  return e->frame_errored;
+	case F_VB2_SEQUENCE:   return e->vb2_sequence;
+	case F_VB2_SEQ_GAP:    return e->vb2_seq_gap;
+	case F_VB2_BYTESUSED: return e->vb2_bytesused;
+	case F_VB2_INTERVAL:   return e->vb2_interval_ns;
+	case F_WIRE_TO_VB2_NS: return e->wire_to_vb2_ns;
 	default:           return 0;
 	}
 }
@@ -322,6 +328,19 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 				       i ? "," : "", dt, fps,
 				       x->frame_interval_ns / 1e6,
 				       x->frame_bytes, x->frame_errored);
+			} else if (x->kind == USBTRACE_EVT_UVC_VB2) {
+				double fps = x->vb2_interval_ns ?
+					1e9 / x->vb2_interval_ns : 0.0;
+
+				printf("%s{\"dt_ms\":%.1f,\"kind\":\"uvc_vb2\","
+				       "\"seq\":%u,\"seq_gap\":%u,"
+				       "\"fps\":%.1f,\"interval_ms\":%.1f,"
+				       "\"bytes\":%u,\"wire_to_vb2_ms\":%.3f}",
+				       i ? "," : "", dt, x->vb2_sequence,
+				       x->vb2_seq_gap, fps,
+				       x->vb2_interval_ns / 1e6,
+				       x->vb2_bytesused,
+				       x->wire_to_vb2_ns / 1e6);
 			} else {
 				printf("%s{\"dt_ms\":%.1f,\"kind\":\"%s\","
 				       "\"status\":%d}",
@@ -358,6 +377,27 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 					       1e9 / x->frame_interval_ns : 0.0,
 				       x->frame_interval_ns / 1e6,
 				       x->frame_bytes);
+			else if (x->kind == USBTRACE_EVT_UVC_VB2) {
+				double fps = x->vb2_interval_ns ?
+					1e9 / x->vb2_interval_ns : 0.0;
+
+				if (x->wire_to_vb2_ns)
+					printf("    %+8.3fs uvc_vb2 %-4s seq=%u "
+					       "%5.1ffps intv=%5.1fms %uB "
+					       "w2v=%.2fms\n",
+					       -dt, x->vb2_seq_gap ? "GAP" : "ok",
+					       x->vb2_sequence, fps,
+					       x->vb2_interval_ns / 1e6,
+					       x->vb2_bytesused,
+					       x->wire_to_vb2_ns / 1e6);
+				else
+					printf("    %+8.3fs uvc_vb2 %-4s seq=%u "
+					       "%5.1ffps intv=%5.1fms %uB\n",
+					       -dt, x->vb2_seq_gap ? "GAP" : "ok",
+					       x->vb2_sequence, fps,
+					       x->vb2_interval_ns / 1e6,
+					       x->vb2_bytesused);
+			}
 			else
 				printf("    %+8.3fs %s\n", -dt,
 				       kind_str(x->kind));

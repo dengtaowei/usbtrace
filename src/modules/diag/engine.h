@@ -40,6 +40,11 @@ enum diag_field {
 	F_FRAME_BYTES,
 	F_FRAME_INTERVAL,	/* frame_interval_ns (FPS source) */
 	F_FRAME_ERRORED,
+	F_VB2_SEQUENCE,
+	F_VB2_SEQ_GAP,
+	F_VB2_BYTESUSED,
+	F_VB2_INTERVAL,	/* vb2_interval_ns (FPS source) */
+	F_WIRE_TO_VB2_NS,
 };
 
 /* Comparison operator for a field constraint. The DSL spells these as value

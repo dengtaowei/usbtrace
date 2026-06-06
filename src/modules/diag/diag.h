@@ -48,6 +48,13 @@ struct diag_event {
 	uint32_t frame_interval_ns;/* prev frame end -> this end (FPS source) */
 	uint8_t frame_errored;	   /* 1 = dropped/corrupt frame */
 
+	/* uvc vb2-specific (when kind == UVC_VB2) */
+	uint32_t vb2_sequence;
+	uint32_t vb2_bytesused;
+	uint32_t vb2_interval_ns;  /* prev vb2 done -> this done (FPS source) */
+	uint32_t wire_to_vb2_ns;   /* wire EOF -> vb2 done (0 = none) */
+	uint8_t vb2_seq_gap;	   /* 1 = kernel sequence gap */
+
 	/* enum-specific */
 	uint8_t old_state;
 	uint8_t new_state;
