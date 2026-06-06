@@ -329,8 +329,8 @@ same time window.
 
 **PR-3 — wire↔vb2 gap analysis (the differentiator)**
 
-- [ ] `stream_corr` map; fill `wire_to_vb2_ns` on vb2 events
-- [ ] Exit summary compares side-by-side:
+- [x] `stream_corr` map; fill `wire_to_vb2_ns` on vb2 events
+- [x] Exit summary compares side-by-side:
       `wire fps` vs `vb2 fps`, `wire drops` vs `vb2 seq_gaps`,
       `avg wire→vb2 latency`
 - [ ] **Verify:** USB healthy + vb2 gaps ⇒ conclusion is "not a USB fault".

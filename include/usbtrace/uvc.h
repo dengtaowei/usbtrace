@@ -71,6 +71,7 @@ struct uvc_vb2_event {
 	__u8  buf_index;	/* vb2_buffer->index */
 	__u8  seq_gap;		/* 1 = kernel sequence != last + 1 (see PR-2) */
 	__u8  _pad;
+	__u32 wire_to_vb2_ns;	/* recent wire EOF -> this vb2 done (0 = none) */
 
 	__u16 vid;		/* 0 until queue->device walk (PR-1) */
 	__u16 product;

@@ -40,9 +40,11 @@ static struct {
 static struct {
 	unsigned long done;
 	unsigned long seq_gaps;
+	unsigned long wire_corr;
 	unsigned long long bytes;
 	unsigned long intervals;
 	unsigned long long sum_interval_ns;
+	unsigned long long sum_wire_to_vb2_ns;
 	unsigned int min_interval_ns;
 	unsigned int max_interval_ns;
 } g_vbstats;
@@ -175,6 +177,10 @@ static void tally_vb2(const struct uvc_vb2_event *e)
 	g_vbstats.done++;
 	if (e->seq_gap)
 		g_vbstats.seq_gaps++;
+	if (e->wire_to_vb2_ns) {
+		g_vbstats.wire_corr++;
+		g_vbstats.sum_wire_to_vb2_ns += e->wire_to_vb2_ns;
+	}
 	g_vbstats.bytes += e->bytesused;
 	if (e->interval_ns) {
 		g_vbstats.intervals++;
@@ -201,19 +207,21 @@ static int handle_vb2(const struct uvc_vb2_event *e, size_t len)
 
 		printf("{\"event\":\"uvc_vb2\",\"sequence\":%u,\"seq_gap\":%u,"
 		       "\"bytesused\":%u,\"interval_us\":%.1f,\"fps\":%.1f,"
-		       "\"state\":%u,\"buf_index\":%u,\"vb2_ts\":%llu,"
-		       "\"vid\":\"0x%04x\",\"pid\":\"0x%04x\",\"bus\":%u,"
-		       "\"dev\":%u,\"comm\":\"%s\"}\n",
+		       "\"wire_to_vb2_us\":%.1f,\"state\":%u,\"buf_index\":%u,"
+		       "\"vb2_ts\":%llu,\"vid\":\"0x%04x\",\"pid\":\"0x%04x\","
+		       "\"bus\":%u,\"dev\":%u,\"comm\":\"%s\"}\n",
 		       e->sequence, e->seq_gap, e->bytesused,
-		       e->interval_ns / 1000.0, fps_of(e->interval_ns), e->state,
-		       e->buf_index, (unsigned long long)e->vb2_timestamp,
+		       e->interval_ns / 1000.0, fps_of(e->interval_ns),
+		       e->wire_to_vb2_ns / 1000.0, e->state, e->buf_index,
+		       (unsigned long long)e->vb2_timestamp,
 		       e->vid, e->product, e->busnum, e->devnum,
 		       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
 	} else {
-		printf("vb2    %-4s seq=%-5u %7uB intv=%6.1fms fps=%5.1f idx=%u %s\n",
+		printf("vb2    %-4s seq=%-5u %7uB intv=%6.1fms fps=%5.1f "
+		       "w2v=%5.1fms idx=%u %s\n",
 		       e->seq_gap ? "GAP" : "ok", e->sequence, e->bytesused,
-		       e->interval_ns / 1e6, fps_of(e->interval_ns), e->buf_index,
-		       e->comm);
+		       e->interval_ns / 1e6, fps_of(e->interval_ns),
+		       e->wire_to_vb2_ns / 1e6, e->buf_index, e->comm);
 	}
 	return 0;
 }
@@ -247,17 +255,12 @@ static void uvc_on_start(void)
 		mode, g_filt.vid, g_filt.pid);
 }
 
-static void uvc_on_stop(void)
+static void uvc_frame_summary(void)
 {
-	class_stream_summary("uvc", &g_ctx.stats);
-
-	if (g_no_frames)
-		return;
+	double avg = g_fstats.intervals ?
+		(double)g_fstats.sum_interval_ns / g_fstats.intervals : 0;
 
 	if (usbtrace_json) {
-		double avg = g_fstats.intervals ?
-			(double)g_fstats.sum_interval_ns / g_fstats.intervals : 0;
-
 		printf("{\"event\":\"uvc_frame_summary\",\"frames\":%lu,"
 		       "\"errored\":%lu,\"bytes\":%llu,\"avg_fps\":%.1f,"
 		       "\"min_fps\":%.1f,\"max_fps\":%.1f}\n",
@@ -275,9 +278,6 @@ static void uvc_on_stop(void)
 		g_fstats.frames, g_fstats.errored,
 		g_fstats.frames ? g_fstats.bytes / g_fstats.frames : 0);
 	if (g_fstats.intervals) {
-		double avg = (double)g_fstats.sum_interval_ns /
-			     g_fstats.intervals;
-
 		fprintf(stderr,
 			"fps (avg):       %.1f\n"
 			"fps (worst):     %.1f  (max interval %.1fms)\n"
@@ -288,14 +288,14 @@ static void uvc_on_stop(void)
 			fps_of(g_fstats.min_interval_ns),
 			g_fstats.min_interval_ns / 1e6);
 	}
+}
 
-	if (g_no_vb2)
-		return;
+static void uvc_vb2_summary(void)
+{
+	double avg = g_vbstats.intervals ?
+		(double)g_vbstats.sum_interval_ns / g_vbstats.intervals : 0;
 
 	if (usbtrace_json) {
-		double avg = g_vbstats.intervals ?
-			(double)g_vbstats.sum_interval_ns / g_vbstats.intervals : 0;
-
 		printf("{\"event\":\"uvc_vb2_summary\",\"done\":%lu,"
 		       "\"seq_gaps\":%lu,\"bytes\":%llu,\"avg_fps\":%.1f,"
 		       "\"min_fps\":%.1f,\"max_fps\":%.1f}\n",
@@ -313,9 +313,6 @@ static void uvc_on_stop(void)
 		g_vbstats.done, g_vbstats.seq_gaps,
 		g_vbstats.done ? g_vbstats.bytes / g_vbstats.done : 0);
 	if (g_vbstats.intervals) {
-		double avg = (double)g_vbstats.sum_interval_ns /
-			     g_vbstats.intervals;
-
 		fprintf(stderr,
 			"fps (avg):       %.1f\n"
 			"fps (worst):     %.1f  (max interval %.1fms)\n"
@@ -326,6 +323,59 @@ static void uvc_on_stop(void)
 			fps_of(g_vbstats.min_interval_ns),
 			g_vbstats.min_interval_ns / 1e6);
 	}
+}
+
+static void uvc_gap_summary(void)
+{
+	double wire_fps = 0, vb2_fps = 0, wire_vb2_ms = 0;
+
+	if (g_fstats.intervals)
+		wire_fps = fps_of((unsigned int)((double)g_fstats.sum_interval_ns /
+						 g_fstats.intervals));
+	if (g_vbstats.intervals)
+		vb2_fps = fps_of((unsigned int)((double)g_vbstats.sum_interval_ns /
+						g_vbstats.intervals));
+	if (g_vbstats.wire_corr)
+		wire_vb2_ms = (double)g_vbstats.sum_wire_to_vb2_ns /
+			      g_vbstats.wire_corr / 1e6;
+
+	if (usbtrace_json) {
+		printf("{\"event\":\"uvc_gap_summary\",\"wire_fps\":%.1f,"
+		       "\"vb2_fps\":%.1f,\"wire_drops\":%lu,"
+		       "\"vb2_seq_gaps\":%lu,\"avg_wire_to_vb2_ms\":%.2f}\n",
+		       wire_fps, vb2_fps, g_fstats.errored, g_vbstats.seq_gaps,
+		       wire_vb2_ms);
+	} else {
+		fprintf(stderr,
+			"\n--- uvc wire vs vb2 (gap analysis) ---\n"
+			"wire fps (avg):      %.1f\n"
+			"vb2 fps (avg):       %.1f\n"
+			"wire drops:          %lu\n"
+			"vb2 seq gaps:        %lu\n"
+			"wire->vb2 (avg):     %.2f ms  (%lu paired)\n",
+			wire_fps, vb2_fps, g_fstats.errored, g_vbstats.seq_gaps,
+			wire_vb2_ms, g_vbstats.wire_corr);
+		if (g_vbstats.seq_gaps && g_fstats.errored == 0)
+			fprintf(stderr,
+				"note: vb2 gaps with no wire drops — USB path "
+				"may be fine; check driver queue / scheduling.\n");
+		else if (g_vbstats.seq_gaps > g_fstats.errored)
+			fprintf(stderr,
+				"note: more vb2 gaps than wire drops — losses "
+				"likely after USB (driver/vb2/host).\n");
+	}
+}
+
+static void uvc_on_stop(void)
+{
+	class_stream_summary("uvc", &g_ctx.stats);
+
+	if (!g_no_frames)
+		uvc_frame_summary();
+	if (!g_no_vb2)
+		uvc_vb2_summary();
+	if (!g_no_frames && !g_no_vb2)
+		uvc_gap_summary();
 }
 
 static int uvc_run(volatile bool *running)
