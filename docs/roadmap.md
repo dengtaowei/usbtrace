@@ -19,9 +19,17 @@ deliver the requirements already promised, then build the differentiator.
       sees `urb->status` before the final value lands. Fixed by hooking
       `usb_hcd_giveback_urb(hcd, urb, status)` and reading the `status` arg
       directly. Verified: status now reports `0`/`-32`/`-71`/`-2` etc.
-- [ ] **Graceful degradation / feature probing** (also under Cross-cutting:
+- [x] **Graceful degradation / feature probing** (also under Cross-cutting:
       CO-RE robustness). A missing kprobe target must skip+warn, not fail the
       whole load. This is the real payoff of "one CO-RE binary across kernels".
+      Implemented as `usbtrace_autoload_filter()` (`src/probe.c`): before load it
+      feature-probes every BPF program (functions via kallsyms ∪
+      `available_filter_functions`, tracepoints via tracefs) and disables only
+      the absent ones (tri-state, fail-open). Wired into `usbtrace_run()` and
+      `diag`, so one missing hook never sinks a module; a module with no usable
+      hook errors cleanly, and `diag` skips just that source. Verified: `storage`
+      on a `uas`-only host skips without a libbpf error dump. See
+      [architecture.md](architecture.md#graceful-degradation-per-program-feature-probing).
 
 ### Tier 1 — deliver requirements that are stated but not truly met
 
@@ -141,8 +149,12 @@ all feed `diag` via a table-driven source registry. See [class.md](class.md).
   pid/comm, devnum filters.
 - **Symbolization & stacks**: optional kernel stack capture for error paths
   (gated, off by default for low overhead).
-- **CO-RE robustness**: feature-probe optional kfuncs/tracepoints; degrade
-  gracefully on older kernels rather than failing to load.
+- **CO-RE robustness**: [x] per-program feature probing — `usbtrace_run()` and
+  `diag` call `usbtrace_autoload_filter()` (`src/probe.c`) to disable hooks whose
+  target is absent (kprobe/kretprobe/fentry/fexit via kallsyms ∪
+  `available_filter_functions`, tracepoints via tracefs) and degrade gracefully
+  instead of failing the load. TODO: probe BPF kfuncs and module BTF availability
+  (the latter gates the planned vb2/v4l2 tier — see [uvc.md](uvc.md)).
 - **Packaging**: prebuilt static binaries per arch; optional committed
   `bpf/vmlinux/<arch>/vmlinux.h` for reproducible cross/CI builds.
 - **Tests/CI**: smoke-load every module's skeleton in a VM matrix across the
