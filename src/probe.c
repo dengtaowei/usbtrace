@@ -2,6 +2,7 @@
 /*
  * Hook feature-probing + per-program graceful degradation. See usbtrace/probe.h.
  */
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -109,6 +110,44 @@ int usbtrace_tracepoint_available(const char *subsys, const char *event)
 }
 
 /*
+ * Is a tracepoint with this event name present in any subsystem?
+ * (e.g. "vb2_v4l2_buf_done" under v4l2 on 5.15, "vb2_buf_done" under vb2 on 6.x)
+ */
+int usbtrace_tracepoint_event_available(const char *event)
+{
+	char path[256];
+	int i, have_base = 0;
+
+	if (!event || !*event)
+		return -1;
+
+	for (i = 0; TRACEFS[i]; i++) {
+		DIR *d;
+		struct dirent *de;
+
+		snprintf(path, sizeof(path), "%s/events", TRACEFS[i]);
+		d = opendir(path);
+		if (!d)
+			continue;
+		have_base = 1;
+		while ((de = readdir(d)) != NULL) {
+			char evtpath[384];
+
+			if (de->d_name[0] == '.')
+				continue;
+			snprintf(evtpath, sizeof(evtpath), "%s/%s/%s", path,
+				 de->d_name, event);
+			if (access(evtpath, F_OK) == 0) {
+				closedir(d);
+				return 1;
+			}
+		}
+		closedir(d);
+	}
+	return have_base ? 0 : -1;
+}
+
+/*
  * Map a SEC() name to an availability verdict (1/0/-1). Unknown SEC forms return
  * -1 (fail-open) so we never disable a hook we don't understand.
  */
@@ -145,8 +184,11 @@ static int sec_available(const char *sec)
 		return usbtrace_tracepoint_available(sb, slash2 + 1);
 	}
 
-	/* raw_tp/tp_btf carry an event name but no subsys; checking would need a
-	 * scan across all subsystems. Leave enabled (fail-open) for now. */
+	/* raw_tp/tp_btf: "<kind>/<event>" — scan all tracepoint subsystems. */
+	if (!strncmp(sec, "raw_tracepoint/", 15) ||
+	    !strncmp(sec, "raw_tp/", 7) || !strncmp(sec, "tp_btf/", 7))
+		return usbtrace_tracepoint_event_available(slash + 1);
+
 	return -1;
 }
 

@@ -10,7 +10,7 @@
 #              `without_state` within `timeout_ms` (checked periodically).
 #
 # Lookback condition fields:
-#   kind        urb | enum | power | lifecycle | class | uvc_frame
+#   kind        urb | enum | power | lifecycle | class | uvc_frame | uvc_vb2
 #   match       { field: value, ... }   per-field constraint. The value prefix
 #                                       picks the operator: bare = equals,
 #                                       "!v" = not-equal, ">=v" / "<=v" =
@@ -145,3 +145,36 @@ rules:
         count_gte: 10
     conclusion: "Video device {vid}:{pid} delivered {count} frames slower than ~15fps within {window}ms; bandwidth or format-negotiation issue."
     fix: "Check the negotiated format/frame interval, the isoc bandwidth budget, and contention from other devices on the same bus."
+
+  # ---- uvc vb2 rules (uvc feeds `kind: uvc_vb2`) ----------------------------
+  # vb2_buf_done tracepoint events carry kernel sequence gaps (vb2_seq_gap) and
+  # optional wire->vb2 latency (wire_to_vb2_ns). Cross-kind rules correlate wire
+  # health (uvc_frame) with vb2 drops to separate USB faults from driver/queue issues.
+
+  - id: video-vb2-drops
+    name: "UVC vb2 sequence gaps"
+    severity: warn
+    trigger: { kind: uvc_vb2 }
+    when:
+      - kind: uvc_vb2
+        match: { vb2_seq_gap: 1 }
+        within_ms: 3000
+        count_gte: 3
+    conclusion: "Video device {vid}:{pid} saw {count} vb2 sequence gap(s) within {window}ms; USB wire may be fine — suspect driver queue or host scheduling."
+    fix: "Check buffer count in the capturing app, CPU load, and whether other processes hold vb2 buffers."
+
+  - id: video-wire-ok-vb2-drops
+    name: "USB OK but vb2 dropping"
+    severity: warn
+    trigger: { kind: uvc_vb2 }
+    when:
+      - kind: uvc_frame
+        match: { frame_errored: "!1" }
+        within_ms: 3000
+        count_gte: 10
+      - kind: uvc_vb2
+        match: { vb2_seq_gap: 1 }
+        within_ms: 3000
+        count_gte: 3
+    conclusion: "Device {vid}:{pid}: USB wire frames look clean within {window}ms but vb2 sequence gaps detected — not a USB/cable issue."
+    fix: "Raise vb2 buffer count, reduce CPU contention, and check whether userspace is slow to dequeue buffers."

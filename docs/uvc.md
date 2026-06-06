@@ -131,6 +131,285 @@ where buffer starvation / host scheduling problems live. **This is the highest
 - [ ] **Wire→vb2 latency.** Time from our `uvc_frame_event` (EOF on the wire) to
       the matching `vb2_buf_done`. A growing gap ⇒ driver-side backlog.
 
+### Phase D — implementation guide
+
+Step-by-step plan for building stage 3. **Scope: vb2 only** — do not pull in
+Phase E (`v4l2_dqbuf` / app boundary) yet. Phase D alone already enables gap
+analysis against the existing wire layer:
+
+| Comparison | Conclusion |
+|------------|------------|
+| wire OK, vb2 `sequence` gaps | driver/vb2 dropped frames (not USB) |
+| wire drops, vb2 drops | cable / bandwidth / device |
+| wire OK, vb2 OK | USB path healthy (look at Phase E for app issues) |
+
+#### Architecture: extend `uvc`, don't fork a new module
+
+Keep one vertical on one skeleton — same ringbuf, same `diag` registration,
+shared BPF maps for wire↔vb2 correlation:
+
+```
+uvc.bpf.c
+  ├─ kprobe/uvc_video_complete        → class_urb_event + uvc_frame_event  (done)
+  └─ tracepoint/vb2/vb2_buf_done      → uvc_vb2_event                      (new)
+```
+
+`usbtrace_autoload_filter()` (`src/probe.c`) disables the vb2 program when the
+tracepoint is absent, so stages 1–2 keep working on kernels without it.
+
+#### Hook choice
+
+| Priority | Hook | Why |
+|----------|------|-----|
+| **1 (start here)** | `tracepoint/vb2/vb2_buf_done` | Stable ABI; args are `struct vb2_buffer *` + `enum vb2_buffer_state`; carries everything needed for sequence / bytesused / drops |
+| 2 (later) | `tracepoint/vb2/vb2_buf_queue` | Queue depth / starvation (needs paired accounting) |
+| 3 (fallback) | kprobe `vb2_buffer_done` | Only if the tracepoint is missing on a target kernel |
+
+Start with **one** tracepoint. It is enough for: vb2-side FPS (`interval_ns`),
+authoritative drop detection (`sequence` gaps), and wire→vb2 latency (time
+correlation). Add `vb2_buf_queue` in a follow-up once `vb2_buf_done` is proven.
+
+Kernel trace format (typical):
+
+```
+TRACE_EVENT(vb2_buf_done,
+    TP_PROTO(struct vb2_buffer *b, enum vb2_buffer_state state),
+    TP_ARGS(b, state),
+    TP_STRUCT__entry(__field(void *, buf) __field(enum vb2_buffer_state, state)),
+    ...
+);
+```
+
+The BPF program receives a tracepoint context whose `buf` field is the
+`vb2_buffer *` pointer — CO-RE-read the fields you need from module BTF
+(`videobuf2_common`).
+
+#### Event model
+
+Add to `include/usbtrace/common.h`:
+
+```c
+USBTRACE_EVT_UVC_VB2 = 7,   /* vb2 buffer done; see uvc.h */
+```
+
+Add to `include/usbtrace/uvc.h`:
+
+```c
+struct uvc_vb2_event {
+    struct usbtrace_event_hdr hdr;   /* kind = USBTRACE_EVT_UVC_VB2 */
+
+    __u32 sequence;        /* vb2 authoritative frame counter */
+    __u32 bytesused;
+    __u64 vb2_timestamp;   /* buffer timestamp (reference; interval uses ktime) */
+    __u8  state;           /* VB2_BUF_STATE_DONE / ERROR / ... */
+    __u32 interval_ns;     /* prev done → this done (vb2-side FPS source) */
+    __u8  seq_gap;         /* 1 = sequence jumped (kernel actually lost a frame) */
+    __u32 wire_to_vb2_ns;  /* set when a recent wire frame was correlated */
+
+    __u16 vid;
+    __u16 product;
+    __u16 busnum;
+    __u16 devnum;
+
+    char comm[USBTRACE_COMM_LEN];
+};
+```
+
+`uvc.c` routes by `hdr.kind` (same pattern as `uvc_frame_event` today). Exit
+summary adds a **vb2** block alongside the existing wire/frame summary:
+`vb2 frames / seq_gaps / vb2 fps / avg wire→vb2`.
+
+Optional `uvc_config` flag: `no_vb2` (mirrors `no_frames`) to skip the module-BTF
+tier on demand.
+
+#### Module-BTF types (minimal declarations)
+
+Do not pull in a full `videobuf2_common` BTF dump unless the verifier demands it.
+Declare only the fields you read, with CO-RE markers:
+
+```c
+enum vb2_buffer_state {
+    VB2_BUF_STATE_DEQUEUED = 0,
+    VB2_BUF_STATE_IN_REQUEST = 1,
+    VB2_BUF_STATE_PREPARING = 2,
+    VB2_BUF_STATE_QUEUED = 3,
+    VB2_BUF_STATE_ACTIVE = 4,
+    VB2_BUF_STATE_DONE = 5,
+    VB2_BUF_STATE_ERROR = 6,
+};
+
+struct vb2_buffer {
+    __u32 index;
+    __u32 type;
+    __u32 memory;
+    __u32 flags;
+    __u32 sequence;
+    __u32 bytesused;
+    __u64 timestamp;
+    /* add fields only as needed */
+} __attribute__((preserve_access_index));
+```
+
+libbpf resolves these against `/sys/kernel/btf/videobuf2_common` when the module
+is loaded. If CO-RE relocation fails on a field, trim the declaration or add the
+field from `bpftool btf dump file /sys/kernel/btf/videobuf2_common format c`.
+
+Keep the vb2 program in a **separate `SEC()` / function** — do not bolt it onto
+`uvc_parse_frames()` (verifier budget).
+
+#### Device filtering (hardest practical problem)
+
+`vb2_buf_done` fires for **every** V4L2 queue (e.g. `virtual_video`, other
+cameras). Must filter or the output drowns in noise.
+
+**v1 — cheap BPF filters (ship first):**
+
+```c
+if (state != VB2_BUF_STATE_DONE)
+    return 0;
+if (bytesused == 0 || bytesused > MAX_REASONABLE)
+    return 0;
+/* optional: bytesused near negotiated frame size, e.g. 614400 for 640×480 YUYV */
+```
+
+User-space `--vid/--pid` can drop events with `vid == 0` until BPF filtering
+improves. Good enough to validate the pipeline.
+
+**v2 — BPF device identity (follow-up):**
+
+Walk `vb2_buffer → vb2_queue → … → USB vid/pid`. Exact path is kernel-version
+dependent; may need `uvcvideo` module BTF for `drv_priv`. Until then, correlate
+in user space / diag by timeline with `uvc_frame` events on the same
+`(bus,dev)`.
+
+#### Wire ↔ vb2 correlation
+
+Wire (`uvc_frame_event`) and vb2 (`uvc_vb2_event`) do **not** share a native
+sequence ID. Do not block v1 on perfect frame-to-buffer pairing.
+
+**v1 — time-window correlation (good enough for gap analysis):**
+
+```c
+/* BPF map: key = stream id (queue ptr hash or (bus,dev) once known) */
+struct stream_corr {
+    __u64 last_wire_done_ns;
+    __u32 last_wire_bytes;
+};
+
+/* uvc_emit_frame():  last_wire_done_ns = now; last_wire_bytes = bytes; */
+/* vb2_buf_done:      if (now - last_wire_done_ns < 100ms)
+                       wire_to_vb2_ns = now - last_wire_done_ns; */
+```
+
+On a healthy UVC stream, wire EOF → `vb2_buf_done` is typically a few ms.
+Sustained growth in `wire_to_vb2_ns` ⇒ driver-side backlog.
+
+**v2 — stronger pairing:** match `bytesused` ≈ `uvc_frame.bytes` within the
+same time window.
+
+#### Delivery plan (four PRs, each shippable)
+
+**PR-1 — minimal loop (do first)**
+
+- [x] `USBTRACE_EVT_UVC_VB2` + `struct uvc_vb2_event`
+- [x] `SEC("raw_tracepoint/vb2_v4l2_buf_done")` (5.15) or
+      `raw_tracepoint/vb2_buf_done` (6.x) in `uvc.bpf.c`
+- [x] Read `sequence`, `bytesused`, `state`; compute `interval_ns`
+- [x] `uvc.c`: route, print text/JSON, basic summary; `--no-vb2` / `no_vb2`
+- [ ] **Verify:** `sudo usbtrace uvc --all --vid 0x046d` with a camera streaming;
+      vb2 FPS ≈ wire FPS (~15fps on a 640×480 YUYV camera); `sequence`
+      monotonic.
+
+**PR-2 — authoritative drop detection**
+
+- [x] Per-stream BPF map `last_sequence`
+- [x] Set `seq_gap = 1` when `sequence != last + 1` (handle wrap explicitly)
+- [x] Summary: `vb2 frames / seq_gaps / vb2 fps (avg/worst/best)`
+- [ ] **Verify:** stress the bus (high res, hub sharing) and see `seq_gap` events.
+
+**PR-3 — wire↔vb2 gap analysis (the differentiator)**
+
+- [x] `stream_corr` map; fill `wire_to_vb2_ns` on vb2 events
+- [x] Exit summary compares side-by-side:
+      `wire fps` vs `vb2 fps`, `wire drops` vs `vb2 seq_gaps`,
+      `avg wire→vb2 latency`
+- [ ] **Verify:** USB healthy + vb2 gaps ⇒ conclusion is "not a USB fault".
+
+**PR-4 — diag integration**
+
+- [x] `diag.c` `normalize()` case for `USBTRACE_EVT_UVC_VB2`
+- [x] Engine fields: `vb2_sequence`, `vb2_seq_gap`, `vb2_bytesused`,
+      `wire_to_vb2_ns`
+- [x] Evidence printer (like `uvc_frame`: show seq/bytes/interval/gap)
+- [x] Example rules in `rules.yaml`:
+
+  ```yaml
+  - id: video-vb2-drops
+    name: "UVC vb2 sequence gaps"
+    severity: warn
+    trigger: { kind: uvc_vb2 }
+    when:
+      - kind: uvc_vb2
+        match: { vb2_seq_gap: 1 }
+        within_ms: 3000
+        count_gte: 3
+    conclusion: "Video device {vid}:{pid} saw {count} vb2 sequence gap(s) within {window}ms; USB wire may be fine — suspect driver queue or host scheduling."
+    fix: "Check buffer count in the capturing app, CPU load, and whether other processes hold vb2 buffers."
+
+  - id: video-wire-ok-vb2-drops
+    name: "USB OK but vb2 dropping"
+    severity: warn
+    trigger: { kind: uvc_vb2 }
+    when:
+      - kind: uvc_frame
+        match: { frame_errored: "!1" }
+        within_ms: 3000
+        count_gte: 10
+      - kind: uvc_vb2
+        match: { vb2_seq_gap: 1 }
+        within_ms: 3000
+        count_gte: 3
+    conclusion: "Device {vid}:{pid}: USB wire frames look clean within {window}ms but vb2 sequence gaps detected — not a USB/cable issue."
+  ```
+
+  Cross-kind rules like `video-wire-ok-vb2-drops` are the payoff of gap analysis:
+  wire health (`uvc_frame`) and vb2 drops (`uvc_vb2`) correlated per device.
+
+#### Pitfalls
+
+| Issue | Mitigation |
+|-------|------------|
+| `virtual_video` / other nodes pollute output | v1: `bytesused` threshold; v2: device walk |
+| Verifier complexity | Separate SEC/function for vb2; don't merge with isoc loop |
+| `vb2_buffer.timestamp` unit varies by kernel | Prefer `bpf_ktime_get_ns()` for `interval_ns` |
+| tracepoint absent | `usbtrace_autoload_filter` skips program; wire layer unaffected |
+| CO-RE field missing on old kernel | Trim struct declaration; feature-probe + degrade |
+| Perfect wire↔buffer identity | Defer to v2; time + bytesused matching is enough for v1 |
+
+#### PR-1 verification checklist
+
+```bash
+# modules + module BTF present
+lsmod | grep -E 'uvcvideo|videobuf2'
+ls /sys/kernel/btf/videobuf2_common
+
+# tracepoint present (needs root)
+ls /sys/kernel/tracing/events/vb2/vb2_buf_done
+
+# run with camera streaming (e.g. browser on /dev/video*)
+sudo ./build/usbtrace uvc --all --vid 0x046d
+
+# expect interleaved lines:
+#   frame  ok  614400B ... fps=14.7 ...     ← wire (stage 1–2)
+#   vb2    ok  seq=42 bytes=614400 ...     ← vb2  (stage 3)
+
+# JSON
+sudo ./build/usbtrace --json uvc --vid 0x046d | jq 'select(.event=="uvc_vb2")'
+```
+
+Success criteria for PR-1: vb2 events appear; vb2 FPS is within ~10% of wire FPS;
+`sequence` increments by 1 almost always.
+
 ## Phase E — stage 4: application boundary (close the loop)
 
 The userspace-facing edge: what the app actually experiences.
