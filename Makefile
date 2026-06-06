@@ -47,7 +47,9 @@ SKEL_INCLUDES := $(addprefix -I,$(sort $(dir $(SKELS))))
 
 VERSION := $(shell git -C . describe --tags --always --dirty 2>/dev/null || echo 0.0.1-dev)
 
-INCLUDES := -I$(OUTPUT) -Iinclude -I$(LIBBPF_UAPI) -I$(VMLINUX_DIR)
+# -Isrc/modules lets cross-module consumers (e.g. diag) include another
+# module's shared header as "<name>/<name>.h".
+INCLUDES := -I$(OUTPUT) -Iinclude -Isrc/modules -I$(LIBBPF_UAPI) -I$(VMLINUX_DIR)
 CFLAGS := -g -O2 -Wall -DUSBTRACE_VERSION='"$(VERSION)"'
 BIN := $(OUTPUT)/usbtrace
 
@@ -128,10 +130,23 @@ $(OUTPUT)/%.o: src/%.c $(SKELS) $(LIBBPF_OBJ)
 	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) $(SKEL_INCLUDES) -I$(dir $<) -c $< -o $@
 
+# ---- diag: embed default rules.yaml ---------------------------------------
+# Bakes the default knowledge base into the binary (works standalone), while
+# `diag --rules <file>` still overrides at runtime.
+DIAG_RULES_YAML := src/modules/diag/rules.yaml
+ifneq ($(wildcard $(DIAG_RULES_YAML)),)
+DIAG_RULES_HDR := $(OUTPUT)/modules/diag/rules_default.h
+$(DIAG_RULES_HDR): $(DIAG_RULES_YAML) scripts/embed-file.sh
+	$(call msg,EMBED,$@)
+	$(Q)mkdir -p $(dir $@)
+	$(Q)scripts/embed-file.sh $< rules_default_yaml > $@
+$(OUTPUT)/modules/diag/rules.o: $(DIAG_RULES_HDR)
+endif
+
 # ---- final binary ---------------------------------------------------------
 $(BIN): $(USER_OBJS) $(LIBBPF_OBJ)
 	$(call msg,BIN,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -lyaml -o $@
 
 .DELETE_ON_ERROR:
 .SECONDARY:
