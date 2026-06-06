@@ -24,6 +24,7 @@ struct symbol {
 /* kind names (enum usbtrace_event_kind). */
 static const struct symbol kind_syms[] = {
 	{ "urb", 1 }, { "enum", 2 }, { "power", 3 }, { "lifecycle", 4 },
+	{ "class", 5 },
 	{ NULL, 0 },
 };
 
@@ -37,6 +38,10 @@ static const struct symbol enum_syms[] = {
 	{ "NOTATTACHED", 0 }, { "ATTACHED", 1 }, { "POWERED", 2 },
 	{ "RECONNECTING", 3 }, { "UNAUTHED", 4 }, { "DEFAULT", 5 },
 	{ "ADDRESS", 6 }, { "CONFIGURED", 7 }, { "SUSPENDED", 8 },
+	/* enum usbtrace_class (for `class:` field / value) */
+	{ "video", 0 }, { "audio", 1 }, { "hid", 2 }, { "storage", 3 },
+	/* enum usbtrace_xfer_type (for `xfer_type:`) */
+	{ "isoc", 0 }, { "int", 1 }, { "control", 2 }, { "bulk", 3 },
 	{ NULL, 0 },
 };
 
@@ -53,6 +58,8 @@ static const struct symbol field_syms[] = {
 	{ "latency_ns", F_LATENCY_NS },
 	{ "actual", F_ACTUAL },
 	{ "length", F_LENGTH },
+	{ "error_count", F_ERROR_COUNT },
+	{ "class", F_CLASS },
 	{ NULL, 0 },
 };
 

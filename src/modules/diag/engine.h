@@ -35,6 +35,8 @@ enum diag_field {
 	F_LATENCY_NS,
 	F_ACTUAL,
 	F_LENGTH,
+	F_ERROR_COUNT,
+	F_CLASS,
 };
 
 enum diag_severity {

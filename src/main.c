@@ -15,6 +15,7 @@
 
 #include "usbtrace/module.h"
 #include "usbtrace/log.h"
+#include "usbtrace/cli.h"
 
 #ifndef USBTRACE_VERSION
 #define USBTRACE_VERSION "0.0.1-dev"
@@ -62,6 +63,9 @@ int main(int argc, char **argv)
 {
 	const char *prog = "usbtrace";
 	int i = 1;
+
+	/* Route libbpf logs through our level-aware printer for every module. */
+	libbpf_set_print(usbtrace_libbpf_print);
 
 	/* Global options must precede the module name. */
 	for (; i < argc; i++) {

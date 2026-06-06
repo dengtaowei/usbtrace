@@ -27,6 +27,7 @@
 #include "rules.h"
 
 /* per-module shared types + generated skeletons */
+#include "usbtrace/class.h"
 #include "urb/urb.h"
 #include "enum/enum.h"
 #include "lifecycle/lifecycle.h"
@@ -35,8 +36,64 @@
 #include "enum.skel.h"
 #include "lifecycle.skel.h"
 #include "power.skel.h"
+/* class-traffic skeletons (all share struct usbtrace_class_config) */
+#include "uvc.skel.h"
+#include "uac.skel.h"
+#include "hid.skel.h"
+#include "storage.skel.h"
 
 #define TICK_INTERVAL_NS (500ULL * 1000000ULL)
+
+/*
+ * Extensible class-source table. Every class module's skeleton is uniform
+ * (same usbtrace_class_config cfg, same maps.events, same __open/load/attach/
+ * destroy naming), so we drive them generically. Adding a new class module to
+ * diag is one DIAG_CLASS_SRC() + one row in diag_class_srcs[] — no changes to
+ * the load/poll logic below. See docs/class.md.
+ */
+struct diag_class_src {
+	const char *name;
+	void *(*open)(void);
+	int (*load)(void *);
+	int (*attach)(void *);
+	void (*destroy)(void *);
+	struct usbtrace_class_config *(*cfg)(void *);
+	int (*events_fd)(void *);
+};
+
+#define DIAG_CLASS_SRC(SK)                                                     \
+	static void *diag_##SK##_open(void) { return SK##__open(); }           \
+	static int diag_##SK##_load(void *s) { return SK##__load(s); }         \
+	static int diag_##SK##_attach(void *s) { return SK##__attach(s); }     \
+	static void diag_##SK##_destroy(void *s) { SK##__destroy(s); }         \
+	static struct usbtrace_class_config *diag_##SK##_cfg(void *s)          \
+	{                                                                     \
+		return &((struct SK *)s)->rodata->cfg;                        \
+	}                                                                     \
+	static int diag_##SK##_fd(void *s)                                    \
+	{                                                                     \
+		return bpf_map__fd(((struct SK *)s)->maps.events);            \
+	}
+
+DIAG_CLASS_SRC(uvc_bpf)
+DIAG_CLASS_SRC(uac_bpf)
+DIAG_CLASS_SRC(hid_bpf)
+DIAG_CLASS_SRC(storage_bpf)
+
+#define DIAG_CLASS_ROW(SK, NAME)                                               \
+	{                                                                     \
+		NAME, diag_##SK##_open, diag_##SK##_load, diag_##SK##_attach,  \
+		diag_##SK##_destroy, diag_##SK##_cfg, diag_##SK##_fd          \
+	}
+
+static const struct diag_class_src diag_class_srcs[] = {
+	DIAG_CLASS_ROW(uvc_bpf, "uvc"),
+	DIAG_CLASS_ROW(uac_bpf, "uac"),
+	DIAG_CLASS_ROW(hid_bpf, "hid"),
+	DIAG_CLASS_ROW(storage_bpf, "storage"),
+};
+#define DIAG_N_CLASS_SRCS                                                      \
+	((int)(sizeof(diag_class_srcs) / sizeof(diag_class_srcs[0])))
 
 static struct {
 	struct usbtrace_filter filt;
@@ -170,6 +227,30 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}
+	case USBTRACE_EVT_CLASS: {
+		/* One case for ALL class modules (uvc/uac/hid/storage/...) — the
+		 * unified class_urb_event makes diag cooperation free; cls tells
+		 * rules which class it was. */
+		const struct class_urb_event *e = data;
+
+		if (len < sizeof(*e))
+			return -1;
+		out->vid = e->vid;
+		out->pid = e->product;
+		out->busnum = e->busnum;
+		out->devnum = e->devnum;
+		out->status = e->status;
+		out->error_count = e->error_count;
+		out->actual = e->actual_length;
+		out->length = e->actual_length;
+		out->xfer_type = e->xfer_type;
+		out->dir_in = e->dir_in;
+		out->ep = e->ep;
+		out->cls = e->klass;
+		out->is_submit = 0; /* class events are completions */
+		memcpy(out->comm, e->comm, sizeof(out->comm));
+		break;
+	}
 	default:
 		return -1;
 	}
@@ -202,14 +283,13 @@ static int diag_run(volatile bool *running)
 	struct enum_bpf *en = NULL;
 	struct lifecycle_bpf *lc = NULL;
 	struct power_bpf *pw = NULL;
+	void *class_h[DIAG_N_CLASS_SRCS] = { 0 };
 	struct ring_buffer *rb = NULL;
 	struct diag_engine *eng = NULL;
 	struct diag_rule *rules = NULL;
-	int nrules, nsrc = 0, err = 0;
+	int nrules, nsrc = 0, err = 0, i;
 	char errbuf[256];
 	uint64_t last_tick;
-
-	libbpf_set_print(usbtrace_libbpf_print);
 
 	/* Load the knowledge base (external file overrides built-in). */
 	if (opts.rules_path)
@@ -276,6 +356,24 @@ static int diag_run(volatile bool *running)
 		}
 	}
 
+	/* Class-traffic sources (uvc/uac/hid/storage): uniform, table-driven.
+	 * A driver that is not loaded simply fails to attach and is skipped. */
+	for (i = 0; i < DIAG_N_CLASS_SRCS; i++) {
+		const struct diag_class_src *s = &diag_class_srcs[i];
+		void *h = s->open();
+
+		if (!h)
+			continue;
+		s->cfg(h)->filter_vid = (unsigned short)opts.filt.vid;
+		s->cfg(h)->filter_pid = (unsigned short)opts.filt.pid;
+		if (s->load(h) || s->attach(h)) {
+			ut_warn("diag: %s probe unavailable, skipping", s->name);
+			s->destroy(h);
+			continue;
+		}
+		class_h[i] = h;
+	}
+
 	if (urb && add_src(&rb, bpf_map__fd(urb->maps.events), eng) == 0)
 		nsrc++;
 	if (en && add_src(&rb, bpf_map__fd(en->maps.events), eng) == 0)
@@ -284,6 +382,12 @@ static int diag_run(volatile bool *running)
 		nsrc++;
 	if (pw && add_src(&rb, bpf_map__fd(pw->maps.events), eng) == 0)
 		nsrc++;
+	for (i = 0; i < DIAG_N_CLASS_SRCS; i++) {
+		if (class_h[i] &&
+		    add_src(&rb, diag_class_srcs[i].events_fd(class_h[i]),
+			    eng) == 0)
+			nsrc++;
+	}
 
 	if (!rb || nsrc == 0) {
 		ut_err("diag: no probes could be attached (need root + BTF?)");
@@ -324,13 +428,16 @@ cleanup:
 	enum_bpf__destroy(en);
 	lifecycle_bpf__destroy(lc);
 	power_bpf__destroy(pw);
+	for (i = 0; i < DIAG_N_CLASS_SRCS; i++)
+		if (class_h[i])
+			diag_class_srcs[i].destroy(class_h[i]);
 	diag_engine_destroy(eng); /* frees rules too */
 	return err ? 1 : 0;
 }
 
 static struct usbtrace_module diag_module = {
 	.name = "diag",
-	.summary = "correlate URB/enum/lifecycle/power into diagnoses (rule engine)",
+	.summary = "correlate URB/enum/lifecycle/power/class into diagnoses (rule engine)",
 	.parse_args = diag_parse_args,
 	.usage = diag_usage,
 	.run = diag_run,

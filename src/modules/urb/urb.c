@@ -15,6 +15,7 @@
 #include "usbtrace/module.h"
 #include "usbtrace/log.h"
 #include "usbtrace/cli.h"
+#include "usbtrace/run.h"
 #include "urb.h"
 #include "urb.skel.h"
 
@@ -127,68 +128,37 @@ static int handle_event(void *ctx, void *data, size_t len)
 	return 0;
 }
 
-static int urb_run(volatile bool *running)
+static void urb_on_start(void)
 {
-	struct urb_bpf *skel;
-	struct ring_buffer *rb = NULL;
-	int err;
-
-	libbpf_set_print(usbtrace_libbpf_print);
-
-	skel = urb_bpf__open();
-	if (!skel) {
-		ut_err("failed to open BPF skeleton");
-		return 1;
-	}
-
-	skel->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
-	skel->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
-	skel->rodata->cfg.emit_submit = opts.emit_submit ? 1 : 0;
-
-	err = urb_bpf__load(skel);
-	if (err) {
-		ut_err("failed to load BPF skeleton: %d (need root + BTF?)", err);
-		goto cleanup;
-	}
-
-	err = urb_bpf__attach(skel);
-	if (err) {
-		ut_err("failed to attach BPF programs: %d", err);
-		goto cleanup;
-	}
-
-	rb = ring_buffer__new(bpf_map__fd(skel->maps.events), handle_event,
-			      NULL, NULL);
-	if (!rb) {
-		err = -1;
-		ut_err("failed to create ring buffer");
-		goto cleanup;
-	}
-
 	ut_info("tracing URBs... vid=0x%04x pid=0x%04x submit=%d (Ctrl-C to stop)",
 		opts.filt.vid, opts.filt.pid, opts.emit_submit);
 	if (!usbtrace_json)
 		printf("%-6s %-4s %-4s %s %s\n", "EVENT", "TYPE", "EP", "D",
 		       "BYTES ...");
+}
 
-	while (*running) {
-		err = ring_buffer__poll(rb, 200 /* ms */);
-		if (err == -EINTR) {
-			err = 0;
-			break;
-		}
-		if (err < 0) {
-			ut_err("ring buffer poll error: %d", err);
-			break;
-		}
+static int urb_run(volatile bool *running)
+{
+	struct urb_bpf *skel = urb_bpf__open();
+	int rc;
+
+	if (!skel) {
+		ut_err("failed to open BPF skeleton");
+		return 1;
 	}
-	if (err > 0)
-		err = 0;
+	skel->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
+	skel->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
+	skel->rodata->cfg.emit_submit = opts.emit_submit ? 1 : 0;
 
-cleanup:
-	ring_buffer__free(rb);
+	rc = usbtrace_run(&(struct usbtrace_run){
+		.skeleton = skel->skeleton,
+		.events = skel->maps.events,
+		.on_event = handle_event,
+		.on_start = urb_on_start,
+	}, running);
+
 	urb_bpf__destroy(skel);
-	return err ? 1 : 0;
+	return rc;
 }
 
 static struct usbtrace_module urb_module = {

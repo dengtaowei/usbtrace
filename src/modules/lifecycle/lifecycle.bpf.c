@@ -21,8 +21,9 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-/* Filled in from user space before load (see lifecycle.c). */
-const volatile struct lifecycle_config cfg;
+/* Filled in from user space before load (see lifecycle.c). The `= {}` initializer
+ * is required for correct BTF emission of const volatile globals on clang <= 10. */
+const volatile struct lifecycle_config cfg = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);

@@ -68,6 +68,7 @@ static const char *kind_str(uint32_t k)
 	case 2: return "enum";
 	case 3: return "power";
 	case 4: return "lifecycle";
+	case 5: return "class";
 	default: return "?";
 	}
 }
@@ -95,6 +96,8 @@ static long ev_field_val(const struct diag_event *e, enum diag_field f)
 	case F_LATENCY_NS: return e->latency_ns;
 	case F_ACTUAL:     return e->actual;
 	case F_LENGTH:     return e->length;
+	case F_ERROR_COUNT: return e->error_count;
+	case F_CLASS:      return e->cls;
 	default:           return 0;
 	}
 }

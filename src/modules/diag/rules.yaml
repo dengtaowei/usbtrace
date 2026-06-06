@@ -69,3 +69,46 @@ rules:
       timeout_ms: 3000
     conclusion: "Device {vid}:{pid} (bus{bus}-dev{dev}) reached ADDRESS but never CONFIGURED within {window}ms; enumeration stalled."
     fix: "Check descriptor fetch / SET_CONFIGURATION; suspect power negotiation, marginal cable, or a flaky device controller."
+
+  # ---- class-traffic rules (uvc/uac/hid/storage feed `kind: class`) ----------
+  # These show cross-module cooperation: the class modules emit normalized
+  # class_urb_event records and diag correlates them per device like any other
+  # source. `class:` selects the subsystem; `error_count: "!0"` counts isoc
+  # error URBs (the != operator).
+
+  - id: video-isoc-errors
+    name: "UVC isoc errors (frame corruption)"
+    severity: warn
+    trigger: { kind: class, class: video }
+    when:
+      - kind: class
+        match: { class: video, error_count: "!0" }
+        within_ms: 1000
+        count_gte: 5
+    conclusion: "Video device {vid}:{pid} saw {count} isoc-error URBs within {window}ms; expect dropped/corrupt frames. Suspect bandwidth, marginal cable, or EMI."
+    fix: "Lower resolution/FPS or move to a dedicated bus/port (avoid sharing a hub), check the cable, and verify the controller's isoc bandwidth budget."
+
+  - id: audio-isoc-errors
+    name: "UAC isoc errors (xrun risk)"
+    severity: warn
+    trigger: { kind: class, class: audio }
+    when:
+      - kind: class
+        match: { class: audio, error_count: "!0" }
+        within_ms: 1000
+        count_gte: 5
+    conclusion: "Audio device {vid}:{pid} saw {count} isoc-error URBs within {window}ms; audio may glitch/underrun."
+    fix: "Reduce sample rate/channels, avoid sharing the bus with other isoc devices, and check the cable/port."
+
+  - id: storage-transfer-errors
+    name: "Mass-storage transfer errors"
+    severity: error
+    trigger: { kind: class, class: storage }
+    when:
+      - kind: class
+        match: { class: storage }
+        status_in: [-71, -84, -110, -32, -19]   # EPROTO/EILSEQ/ETIMEDOUT/EPIPE/ENODEV
+        within_ms: 3000
+        count_gte: 2
+    conclusion: "Storage device {vid}:{pid} had {count} bulk transfer errors within {window}ms; SCSI error recovery / bus reset likely. Suspect cable/power or a failing device."
+    fix: "Reseat/replace the cable, try a powered port/hub, and check dmesg for reset/IO errors."

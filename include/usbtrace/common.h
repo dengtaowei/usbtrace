@@ -25,7 +25,8 @@ enum usbtrace_event_kind {
 	USBTRACE_EVT_ENUM = 2,
 	USBTRACE_EVT_POWER = 3,
 	USBTRACE_EVT_LIFECYCLE = 4,
-	/* reserved for future modules: UAC/UVC/HID/storage ... */
+	USBTRACE_EVT_CLASS = 5,	/* class-traffic URB completion (uvc/uac/hid/storage),
+				 * discriminated by enum usbtrace_class; see class.h */
 };
 
 /* Common envelope at the head of every event pushed to the ring buffer.
