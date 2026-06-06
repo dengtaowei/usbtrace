@@ -63,6 +63,7 @@ CMPLT  BULK ep2  >    32/32    st=0      88.0us 0403:6001 1-3 python3
 - `docs/architecture.md` — design, layout, module interface, run harness
 - `docs/modules.md` — module list + how to add one
 - `docs/class.md` — class-traffic foundation (uvc/uac/hid/storage) + extension guide
+- `docs/uvc.md` — uvc module blueprint (current state + phased feature plan)
 - `docs/diag.md` — diag rule engine, rule schema, knowledge base
 - `docs/roadmap.md` — future modules & expansion requirements
 - `docs/build.md` — dependencies, native & cross-arch builds

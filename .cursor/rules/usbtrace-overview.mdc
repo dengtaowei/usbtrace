@@ -29,7 +29,12 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
 - `include/usbtrace/common.h` — BPF-safe shared types; every ring-buffer record
   starts with `struct usbtrace_event_hdr { kind; size; ts_ns; }`.
 - `src/run.c` + `include/usbtrace/run.h` — shared `usbtrace_run()` harness
-  (load→attach→ring buffer→poll→teardown); every single-skeleton module uses it.
+  (feature-probe→load→attach→ring buffer→poll→teardown); every single-skeleton
+  module uses it.
+- `src/probe.c` + `include/usbtrace/probe.h` — `usbtrace_autoload_filter()`:
+  per-program graceful degradation (disables hooks whose target is absent on this
+  kernel so one missing function doesn't sink the module). Auto-run by the
+  harness; `diag` calls it before its manual `__load`.
 - `include/usbtrace/class.h` + `class_*` + `src/class_stream.c` — class-traffic
   foundation shared by uvc/uac/hid/storage (one `class_urb_event`); feeds `diag`.
 - `src/modules/urb/` — reference tracing module; `src/modules/uvc/` — reference

@@ -8,7 +8,7 @@ stay tiny, consistent, and trivially extensible — and so they all cooperate wi
 
 | Module | Driver | Hook(s) | Signal |
 |--------|--------|---------|--------|
-| `uvc` | uvcvideo | `uvc_video_complete` | video isoc errors / frame drops |
+| `uvc` | uvcvideo | `uvc_video_complete` | isoc errors **+ frame-level**: real FPS, frame drops, PTS/SCR (see below) |
 | `uac` | snd-usb-audio | `snd_complete_urb` | audio isoc errors / xruns (IN=capture, OUT=playback) |
 | `hid` | usbhid | `hid_irq_in`, `hid_irq_out` | report flow & errors (OUT = SET_REPORT) |
 | `storage` | usb-storage | `usb_stor_blocking_completion` | BOT bulk stalls/timeouts before SCSI reset |
@@ -108,6 +108,52 @@ code**. Just register the source:
 That's it — the table-driven loader brings it up with graceful degradation, sets
 the filter, and merges its ringbuf into the poll loop.
 
+## uvc: frame-level diagnosis (a class module that adds depth)
+
+> Future plan for this module lives in [uvc.md](uvc.md) (phased blueprint).
+
+
+`uvc` shows the intended way to go *beyond* the shared per-URB record without
+touching it. It rides the foundation for transfer health **and** emits a second,
+richer record per assembled video frame — so `uac`/`hid`/`storage` are unchanged
+while `uvc` answers questions a per-URB view cannot: *what is the real frame
+rate, how many frames actually dropped, how much PTS/SCR jitter?*
+
+```
+uvc_video_complete(urb)
+   ├─ usbtrace_class_urb_emit()      → class_urb_event   (kind=CLASS, shared health)
+   └─ uvc_parse_frames(urb)          → walks the isoc packet descriptors,
+        parses the UVC payload header in each packet (FID/EOF/ERR/PTS/SCR),
+        assembles frames in a per-stream BPF hash map, and on each End-of-Frame
+        (or a frame that lost its EOF) emits:
+                                      → uvc_frame_event  (kind=UVC_FRAME)
+```
+
+A frame is **errored** when it ends without a clean EOF (the FID toggled
+mid-frame ⇒ a dropped/truncated frame) or any contributing isoc packet had an
+error / the UVC ERR bit. `interval_ns` (previous-frame-end → this-frame-end) is
+the true FPS source; `pts`/`scr_stc` enable latency/jitter analysis.
+
+CO-RE is preserved: it reads `struct urb` + `struct usb_iso_packet_descriptor`
+(both in vmlinux BTF) and the payload bytes via `bpf_probe_read_kernel`;
+descriptor addresses use `bpf_core_field_offset(struct urb, iso_frame_desc)`, not
+a hardcoded offset. The packet loop is bounded (`UVC_MAX_ISOC_PKTS`) for the
+verifier. Frame parsing is on by default; `--no-frames` reduces `uvc` to plain
+URB health.
+
+```bash
+sudo usbtrace uvc --vid 0x046d            # anomalies: dropped/corrupt frames
+sudo usbtrace uvc --all --vid 0x046d      # every frame + every URB
+sudo usbtrace uvc --fps 30 --vid 0x046d   # also flag frames slower than 30fps
+sudo usbtrace --json uvc | jq             # one JSON object per frame/URB
+```
+
+The exit summary adds frame totals: frames, dropped/corrupt, average frame size,
+and avg/worst/best FPS. Frame records also feed diag (see the `uvc_frame` rules
+below). `uvc_frame_event` fields: `bytes`, `packets`, `err_packets`,
+`duration_ns`, `interval_ns`, `pts`, `scr_stc`, `scr_sof`, `errored`, `eof`,
+`fid` (see `include/usbtrace/uvc.h`).
+
 ## diag cooperation & rules
 
 diag loads every class source alongside urb/enum/lifecycle/power and normalizes
@@ -130,6 +176,22 @@ New rule fields available to class events: `class` (video/audio/hid/storage),
 (isoc/int/control/bulk), `ep`, `dir_in`, `actual`/`length`. See
 [diag.md](diag.md) for the full schema.
 
+`uvc`'s frame records appear to diag as `kind: uvc_frame` (cls=video), exposing
+`frame_errored`, `frame_interval_ns` and `frame_bytes`. Combined with the new
+numeric `match` operators (`>=` / `<=`), this lets rules reason about real frames
+rather than URBs — e.g. the built-in low-fps rule:
+
+```yaml
+- id: video-low-fps
+  trigger: { kind: uvc_frame }
+  when:
+    - kind: uvc_frame
+      match: { frame_interval_ns: ">=66000000" }   # >=66ms gap => <~15 fps
+      within_ms: 3000
+      count_gte: 10
+  conclusion: "Video device {vid}:{pid} delivered {count} frames slower than ~15fps ..."
+```
+
 ## Event fields (`struct class_urb_event`)
 
 | Field | Source | Meaning |
@@ -149,6 +211,10 @@ New rule fields available to class events: `class` (video/audio/hid/storage),
   interrupt context.
 - UAS mass-storage devices use the `uas` driver, not `usb-storage`; the
   `storage` module covers BOT only (extend with a `uas` hook if needed).
-- If a driver is not loaded its kprobe target is absent: a standalone module
-  exits with an attach error, while `diag` warns and skips just that source
-  (the other sources keep running).
+- If a driver is not loaded its kprobe target is absent. Hooks are
+  feature-probed per program before load (see
+  [architecture.md](architecture.md#graceful-degradation-per-program-feature-probing)):
+  a standalone module disables the missing hook and still runs on any hooks that
+  remain, exiting cleanly only if none are present; `diag` skips just that source
+  and keeps the others running. Example: `storage` on a `uas` device (no
+  `usb_stor_blocking_completion`) is skipped without a libbpf error dump.

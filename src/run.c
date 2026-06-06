@@ -6,11 +6,19 @@
 
 #include "usbtrace/run.h"
 #include "usbtrace/log.h"
+#include "usbtrace/probe.h"
 
 int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 {
 	struct ring_buffer *rb = NULL;
 	int err;
+
+	/* Per-program feature probe: disable hooks whose target is absent on
+	 * this kernel so one missing function doesn't sink the whole module. */
+	if (usbtrace_autoload_filter(*r->skeleton->obj) == 0) {
+		ut_err("no supported hooks on this kernel for this module");
+		return 1;
+	}
 
 	err = bpf_object__load_skeleton(r->skeleton);
 	if (err) {

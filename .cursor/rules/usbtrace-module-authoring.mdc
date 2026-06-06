@@ -79,5 +79,14 @@ examples.
 ## Hook portability
 
 Prefer stable tracepoints when available; otherwise kprobes on USB core
-functions (`usb_submit_urb`, `__usb_hcd_giveback_urb`, `usb_disconnect`, ...).
-Guard for functions that may be absent on some kernels.
+functions (`usb_submit_urb`, `usb_hcd_giveback_urb`, `usb_disconnect`, ...).
+
+Hooks that may be absent on some kernels are handled automatically: the run
+harness calls `usbtrace_autoload_filter()` (`usbtrace/probe.h`) before load,
+which reads each program's `SEC()` name, checks the target
+(functions via kallsyms/`available_filter_functions`, tracepoints via tracefs),
+and disables `autoload` for any that are absent — so a multi-hook module survives
+a single missing hook and only fails when none attach. Just name programs
+`SEC("kprobe/<func>")` / `SEC("tracepoint/<sub>/<evt>")`; no per-module guarding
+needed. A consumer that drives the skeleton ABI directly (no `usbtrace_run`, like
+`diag`) must call `usbtrace_autoload_filter(skel->obj)` itself before `__load`.

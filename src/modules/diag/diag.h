@@ -43,6 +43,11 @@ struct diag_event {
 	/* class-specific */
 	uint8_t cls;		/* enum usbtrace_class (when kind == CLASS) */
 
+	/* uvc frame-specific (when kind == UVC_FRAME) */
+	uint32_t frame_bytes;	   /* payload bytes in the frame */
+	uint32_t frame_interval_ns;/* prev frame end -> this end (FPS source) */
+	uint8_t frame_errored;	   /* 1 = dropped/corrupt frame */
+
 	/* enum-specific */
 	uint8_t old_state;
 	uint8_t new_state;

@@ -21,6 +21,7 @@
 #include "usbtrace/module.h"
 #include "usbtrace/log.h"
 #include "usbtrace/cli.h"
+#include "usbtrace/probe.h"
 
 #include "diag.h"
 #include "engine.h"
@@ -28,6 +29,7 @@
 
 /* per-module shared types + generated skeletons */
 #include "usbtrace/class.h"
+#include "usbtrace/uvc.h"
 #include "urb/urb.h"
 #include "enum/enum.h"
 #include "lifecycle/lifecycle.h"
@@ -59,6 +61,7 @@ struct diag_class_src {
 	void (*destroy)(void *);
 	struct usbtrace_class_config *(*cfg)(void *);
 	int (*events_fd)(void *);
+	struct bpf_object *(*obj)(void *);
 };
 
 #define DIAG_CLASS_SRC(SK)                                                     \
@@ -68,11 +71,17 @@ struct diag_class_src {
 	static void diag_##SK##_destroy(void *s) { SK##__destroy(s); }         \
 	static struct usbtrace_class_config *diag_##SK##_cfg(void *s)          \
 	{                                                                     \
-		return &((struct SK *)s)->rodata->cfg;                        \
+		/* cast tolerates a layout-compatible prefix (e.g. uvc_config) */\
+		return (struct usbtrace_class_config *)                       \
+			&((struct SK *)s)->rodata->cfg;                       \
 	}                                                                     \
 	static int diag_##SK##_fd(void *s)                                    \
 	{                                                                     \
 		return bpf_map__fd(((struct SK *)s)->maps.events);            \
+	}                                                                     \
+	static struct bpf_object *diag_##SK##_obj(void *s)                    \
+	{                                                                     \
+		return ((struct SK *)s)->obj;                                 \
 	}
 
 DIAG_CLASS_SRC(uvc_bpf)
@@ -83,7 +92,8 @@ DIAG_CLASS_SRC(storage_bpf)
 #define DIAG_CLASS_ROW(SK, NAME)                                               \
 	{                                                                     \
 		NAME, diag_##SK##_open, diag_##SK##_load, diag_##SK##_attach,  \
-		diag_##SK##_destroy, diag_##SK##_cfg, diag_##SK##_fd          \
+		diag_##SK##_destroy, diag_##SK##_cfg, diag_##SK##_fd,         \
+		diag_##SK##_obj                                               \
 	}
 
 static const struct diag_class_src diag_class_srcs[] = {
@@ -251,6 +261,26 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}
+	case USBTRACE_EVT_UVC_FRAME: {
+		/* uvc rides the class path for URB health AND emits this richer
+		 * per-frame record; cls=VIDEO so frame rules read like class rules. */
+		const struct uvc_frame_event *e = data;
+
+		if (len < sizeof(*e))
+			return -1;
+		out->vid = e->vid;
+		out->pid = e->product;
+		out->busnum = e->busnum;
+		out->devnum = e->devnum;
+		out->ep = e->ep;
+		out->cls = USBTRACE_CLASS_VIDEO;
+		out->actual = e->bytes;
+		out->frame_bytes = e->bytes;
+		out->frame_interval_ns = e->interval_ns;
+		out->frame_errored = e->errored;
+		memcpy(out->comm, e->comm, sizeof(out->comm));
+		break;
+	}
 	default:
 		return -1;
 	}
@@ -319,7 +349,8 @@ static int diag_run(volatile bool *running)
 		urb->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
 		urb->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
 		urb->rodata->cfg.emit_submit = 1; /* need submits for correlation */
-		if (urb_bpf__load(urb) || urb_bpf__attach(urb)) {
+		if (usbtrace_autoload_filter(urb->obj) == 0 ||
+		    urb_bpf__load(urb) || urb_bpf__attach(urb)) {
 			ut_warn("diag: urb probe unavailable, skipping");
 			urb_bpf__destroy(urb);
 			urb = NULL;
@@ -329,7 +360,8 @@ static int diag_run(volatile bool *running)
 	if (en) {
 		en->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
 		en->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
-		if (enum_bpf__load(en) || enum_bpf__attach(en)) {
+		if (usbtrace_autoload_filter(en->obj) == 0 ||
+		    enum_bpf__load(en) || enum_bpf__attach(en)) {
 			ut_warn("diag: enum probe unavailable, skipping");
 			enum_bpf__destroy(en);
 			en = NULL;
@@ -339,7 +371,8 @@ static int diag_run(volatile bool *running)
 	if (lc) {
 		lc->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
 		lc->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
-		if (lifecycle_bpf__load(lc) || lifecycle_bpf__attach(lc)) {
+		if (usbtrace_autoload_filter(lc->obj) == 0 ||
+		    lifecycle_bpf__load(lc) || lifecycle_bpf__attach(lc)) {
 			ut_warn("diag: lifecycle probe unavailable, skipping");
 			lifecycle_bpf__destroy(lc);
 			lc = NULL;
@@ -349,7 +382,8 @@ static int diag_run(volatile bool *running)
 	if (pw) {
 		pw->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
 		pw->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
-		if (power_bpf__load(pw) || power_bpf__attach(pw)) {
+		if (usbtrace_autoload_filter(pw->obj) == 0 ||
+		    power_bpf__load(pw) || power_bpf__attach(pw)) {
 			ut_warn("diag: power probe unavailable, skipping");
 			power_bpf__destroy(pw);
 			pw = NULL;
@@ -357,7 +391,9 @@ static int diag_run(volatile bool *running)
 	}
 
 	/* Class-traffic sources (uvc/uac/hid/storage): uniform, table-driven.
-	 * A driver that is not loaded simply fails to attach and is skipped. */
+	 * Each skeleton is feature-probed per program first, so a missing hook
+	 * disables just that program; a source with no usable hook (or that
+	 * fails to attach, e.g. its driver isn't loaded) is skipped entirely. */
 	for (i = 0; i < DIAG_N_CLASS_SRCS; i++) {
 		const struct diag_class_src *s = &diag_class_srcs[i];
 		void *h = s->open();
@@ -366,7 +402,8 @@ static int diag_run(volatile bool *running)
 			continue;
 		s->cfg(h)->filter_vid = (unsigned short)opts.filt.vid;
 		s->cfg(h)->filter_pid = (unsigned short)opts.filt.pid;
-		if (s->load(h) || s->attach(h)) {
+		if (usbtrace_autoload_filter(s->obj(h)) == 0 ||
+		    s->load(h) || s->attach(h)) {
 			ut_warn("diag: %s probe unavailable, skipping", s->name);
 			s->destroy(h);
 			continue;
