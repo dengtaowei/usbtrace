@@ -3,7 +3,8 @@
 `usbtrace` is an eBPF-based USB subsystem tracer & diagnostic tool for Linux
 BSP work, inspired by [nettrace](https://github.com/OpenCloudOS/nettrace). Where
 nettrace tracks an `skb` through the network stack, usbtrace tracks USB device
-lifecycle, URBs, power events, and (later) class-level traffic (UAC/UVC/HID/...).
+lifecycle, URBs, power events, and class-level traffic (UVC/UAC/HID/storage),
+and correlates them into diagnoses via the `diag` rule engine.
 
 ## Design goals
 

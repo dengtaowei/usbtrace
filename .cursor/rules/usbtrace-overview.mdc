@@ -28,12 +28,21 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
   via `USBTRACE_MODULE_REGISTER`, constructor-based linked list).
 - `include/usbtrace/common.h` — BPF-safe shared types; every ring-buffer record
   starts with `struct usbtrace_event_hdr { kind; size; ts_ns; }`.
-- `src/modules/urb/` — reference module (URB submit/complete + latency).
-- `docs/` — architecture, modules (+ roadmap), build. Keep these updated.
+- `src/run.c` + `include/usbtrace/run.h` — shared `usbtrace_run()` harness
+  (load→attach→ring buffer→poll→teardown); every single-skeleton module uses it.
+- `include/usbtrace/class.h` + `class_*` + `src/class_stream.c` — class-traffic
+  foundation shared by uvc/uac/hid/storage (one `class_urb_event`); feeds `diag`.
+- `src/modules/urb/` — reference tracing module; `src/modules/uvc/` — reference
+  class module; `src/modules/diag/` — cross-module rule engine.
+- `docs/` — architecture, modules, class, diag, roadmap, build. Keep updated.
 
 ## Conventions
 
 - License: GPL-2.0; every `.bpf.c` needs `char LICENSE[] SEC("license") = "GPL";`.
 - Events go through one `BPF_MAP_TYPE_RINGBUF` named `events`; route by `hdr.kind`.
+- Module `run()` opens its skeleton + sets `.rodata` cfg, then calls
+  `usbtrace_run()`; it never hand-rolls the load/attach/poll loop.
+- Tunables: `const volatile struct <name>_config cfg = {};` (`= {}` needed for
+  clang ≤10 BTF). `libbpf_set_print()` is done once in `main.c`.
 - Run requires root + kernel BTF (`/sys/kernel/btf/vmlinux`).
 - Build: `make deps` once, then `make`. See `usbtrace-build` rule for cross.
