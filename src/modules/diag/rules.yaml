@@ -10,8 +10,11 @@
 #              `without_state` within `timeout_ms` (checked periodically).
 #
 # Lookback condition fields:
-#   kind        urb | enum | power | lifecycle
-#   match       { field: value, ... }   equality on event fields
+#   kind        urb | enum | power | lifecycle | class | uvc_frame
+#   match       { field: value, ... }   per-field constraint. The value prefix
+#                                       picks the operator: bare = equals,
+#                                       "!v" = not-equal, ">=v" / "<=v" =
+#                                       numeric compare (e.g. frame_interval_ns).
 #   status_in   [ ... ]                 urb->status is one of these
 #   within_ms   N                       only events within N ms before trigger
 #   count_gte   N                       need at least N matching events
@@ -112,3 +115,33 @@ rules:
         count_gte: 2
     conclusion: "Storage device {vid}:{pid} had {count} bulk transfer errors within {window}ms; SCSI error recovery / bus reset likely. Suspect cable/power or a failing device."
     fix: "Reseat/replace the cable, try a powered port/hub, and check dmesg for reset/IO errors."
+
+  # ---- uvc frame-level rules (uvc feeds `kind: uvc_frame`) --------------------
+  # The uvc module reconstructs whole video frames in BPF (FID/EOF/PTS/SCR) and
+  # emits one uvc_frame record per frame, so diag reasons about actual frames,
+  # not just URBs: real drops and real frame rate. frame_errored marks a
+  # dropped/corrupt frame; frame_interval_ns is the inter-frame gap (FPS source).
+
+  - id: video-frame-drops
+    name: "UVC frame drops"
+    severity: warn
+    trigger: { kind: uvc_frame }
+    when:
+      - kind: uvc_frame
+        match: { frame_errored: 1 }
+        within_ms: 2000
+        count_gte: 5
+    conclusion: "Video device {vid}:{pid} dropped/corrupted {count} frames within {window}ms; expect visible glitches or stutter."
+    fix: "Lower resolution/FPS, use a dedicated bus/port (avoid shared hubs), and check the cable / EMI / isoc bandwidth budget."
+
+  - id: video-low-fps
+    name: "UVC low frame rate"
+    severity: warn
+    trigger: { kind: uvc_frame }
+    when:
+      - kind: uvc_frame
+        match: { frame_interval_ns: ">=66000000" }   # >=66ms gap => <~15 fps
+        within_ms: 3000
+        count_gte: 10
+    conclusion: "Video device {vid}:{pid} delivered {count} frames slower than ~15fps within {window}ms; bandwidth or format-negotiation issue."
+    fix: "Check the negotiated format/frame interval, the isoc bandwidth budget, and contention from other devices on the same bus."

@@ -24,7 +24,7 @@ struct symbol {
 /* kind names (enum usbtrace_event_kind). */
 static const struct symbol kind_syms[] = {
 	{ "urb", 1 }, { "enum", 2 }, { "power", 3 }, { "lifecycle", 4 },
-	{ "class", 5 },
+	{ "class", 5 }, { "uvc_frame", 6 },
 	{ NULL, 0 },
 };
 
@@ -60,6 +60,9 @@ static const struct symbol field_syms[] = {
 	{ "length", F_LENGTH },
 	{ "error_count", F_ERROR_COUNT },
 	{ "class", F_CLASS },
+	{ "frame_bytes", F_FRAME_BYTES },
+	{ "frame_interval_ns", F_FRAME_INTERVAL },
+	{ "frame_errored", F_FRAME_ERRORED },
 	{ NULL, 0 },
 };
 
@@ -159,15 +162,22 @@ static int add_match(struct diag_cond *c, const char *field, const char *valstr,
 		     char *err, size_t errsz)
 {
 	long fid, val;
-	int neg = 0;
+	enum diag_op op = OP_EQ;
 
 	if (sym_lookup(field_syms, field, &fid)) {
 		snprintf(err, errsz, "unknown field '%s'", field);
 		return -1;
 	}
-	if (valstr[0] == '!') {	/* "!value" means field != value */
-		neg = 1;
+	/* value prefix selects the operator: "!v" (NE), ">=v", "<=v"; else EQ */
+	if (valstr[0] == '!') {
+		op = OP_NE;
 		valstr++;
+	} else if (valstr[0] == '>' && valstr[1] == '=') {
+		op = OP_GTE;
+		valstr += 2;
+	} else if (valstr[0] == '<' && valstr[1] == '=') {
+		op = OP_LTE;
+		valstr += 2;
 	}
 	if (resolve_value(valstr, &val)) {
 		snprintf(err, errsz, "bad value '%s' for field '%s'", valstr,
@@ -180,7 +190,7 @@ static int add_match(struct diag_cond *c, const char *field, const char *valstr,
 	}
 	c->match[c->nmatch].field = (enum diag_field)fid;
 	c->match[c->nmatch].value = val;
-	c->match[c->nmatch].neg = neg;
+	c->match[c->nmatch].op = op;
 	c->nmatch++;
 	return 0;
 }

@@ -37,6 +37,18 @@ enum diag_field {
 	F_LENGTH,
 	F_ERROR_COUNT,
 	F_CLASS,
+	F_FRAME_BYTES,
+	F_FRAME_INTERVAL,	/* frame_interval_ns (FPS source) */
+	F_FRAME_ERRORED,
+};
+
+/* Comparison operator for a field constraint. The DSL spells these as value
+ * prefixes: "!v" (NE), ">=v" (GTE), "<=v" (LTE); bare value means EQ. */
+enum diag_op {
+	OP_EQ = 0,
+	OP_NE,
+	OP_GTE,
+	OP_LTE,
 };
 
 enum diag_severity {
@@ -45,11 +57,11 @@ enum diag_severity {
 	SEV_ERROR,
 };
 
-/* A single field constraint: field == value, or field != value when neg. */
+/* A single field constraint: `field <op> value`. */
 struct diag_match {
 	enum diag_field field;
 	long value;
-	int neg;	/* 1 = require field != value (DSL "!value") */
+	enum diag_op op;
 };
 
 /* One lookback condition (event-driven rules). */

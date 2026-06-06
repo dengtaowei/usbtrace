@@ -28,6 +28,7 @@
 
 /* per-module shared types + generated skeletons */
 #include "usbtrace/class.h"
+#include "usbtrace/uvc.h"
 #include "urb/urb.h"
 #include "enum/enum.h"
 #include "lifecycle/lifecycle.h"
@@ -68,7 +69,9 @@ struct diag_class_src {
 	static void diag_##SK##_destroy(void *s) { SK##__destroy(s); }         \
 	static struct usbtrace_class_config *diag_##SK##_cfg(void *s)          \
 	{                                                                     \
-		return &((struct SK *)s)->rodata->cfg;                        \
+		/* cast tolerates a layout-compatible prefix (e.g. uvc_config) */\
+		return (struct usbtrace_class_config *)                       \
+			&((struct SK *)s)->rodata->cfg;                       \
 	}                                                                     \
 	static int diag_##SK##_fd(void *s)                                    \
 	{                                                                     \
@@ -248,6 +251,26 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		out->ep = e->ep;
 		out->cls = e->klass;
 		out->is_submit = 0; /* class events are completions */
+		memcpy(out->comm, e->comm, sizeof(out->comm));
+		break;
+	}
+	case USBTRACE_EVT_UVC_FRAME: {
+		/* uvc rides the class path for URB health AND emits this richer
+		 * per-frame record; cls=VIDEO so frame rules read like class rules. */
+		const struct uvc_frame_event *e = data;
+
+		if (len < sizeof(*e))
+			return -1;
+		out->vid = e->vid;
+		out->pid = e->product;
+		out->busnum = e->busnum;
+		out->devnum = e->devnum;
+		out->ep = e->ep;
+		out->cls = USBTRACE_CLASS_VIDEO;
+		out->actual = e->bytes;
+		out->frame_bytes = e->bytes;
+		out->frame_interval_ns = e->interval_ns;
+		out->frame_errored = e->errored;
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}

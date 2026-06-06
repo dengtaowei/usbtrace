@@ -39,6 +39,9 @@ rule engine ── live findings (conclusion + evidence)
   registry and share one normalized record, so a rule reaches all of them with
   `kind: class` + `class: video|audio|hid|storage`. Adding a class source to diag
   is two lines (see [class.md](class.md)).
+- `uvc` additionally feeds per-frame records as `kind: uvc_frame`, so rules can
+  reason about *real frames* (drops, frame rate) and not just URBs. diag enables
+  uvc frame parsing automatically, so frame rules work in `diag` with no flags.
 
 ## Knowledge base
 
@@ -91,8 +94,8 @@ Deadline example:
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | `urb` \| `enum` \| `power` \| `lifecycle` \| `class` |
-| `match` | `{ field: value, ... }` equality on event fields; prefix the value with `!` for not-equal, e.g. `error_count: "!0"` |
+| `kind` | `urb` \| `enum` \| `power` \| `lifecycle` \| `class` \| `uvc_frame` |
+| `match` | `{ field: value, ... }` constraint per field. The value prefix selects the operator: bare = equals, `!v` = not-equal (e.g. `error_count: "!0"`), `>=v` / `<=v` = numeric compare (e.g. `frame_interval_ns: ">=66000000"`) |
 | `status_in` | list; status is one of these (use negative errnos) |
 | `within_ms` | only consider events within N ms before the trigger |
 | `count_gte` | require at least N matching events (default 1) |
@@ -101,11 +104,12 @@ Deadline example:
 
 `kind`, `is_submit`, `status`, `xfer_type`, `dir_in`, `ep`, `action`,
 `old_state`, `new_state`, `latency_ns`, `actual`, `length`, `error_count`,
-`class`.
+`class`, and (for `kind: uvc_frame`) `frame_bytes`, `frame_interval_ns`,
+`frame_errored`.
 
 Values may be numeric (`0`, `-71`, `0x6001`) or symbolic:
 
-- kinds: `urb` `enum` `power` `lifecycle` `class`
+- kinds: `urb` `enum` `power` `lifecycle` `class` `uvc_frame`
 - classes (for `class:`): `video` `audio` `hid` `storage`
 - xfer types (for `xfer_type:`): `isoc` `int` `control` `bulk`
 - actions: `connect` `disconnect` (lifecycle), `autosuspend` `autoresume` (power)
@@ -128,6 +132,8 @@ Usable in `conclusion` / `fix`: `{vid}` `{pid}` `{bus}` `{dev}` `{count}`
 | `video-isoc-errors` | warn | UVC isoc errors in a short window → frame drops (bandwidth/cable/EMI) |
 | `audio-isoc-errors` | warn | UAC isoc errors in a short window → audio glitches/xruns |
 | `storage-transfer-errors` | error | mass-storage bulk errors → SCSI reset / cable/power/device |
+| `video-frame-drops` | warn | repeated dropped/corrupt UVC frames → visible glitches |
+| `video-low-fps` | warn | UVC frames sustained slower than ~15fps → bandwidth/negotiation |
 
 ## Output
 

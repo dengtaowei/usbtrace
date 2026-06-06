@@ -17,8 +17,16 @@
 #include "usbtrace/log.h"
 #include "engine.h"
 
-#define WIN_MAX_DEVS	256
-#define WIN_MAX_EVENTS	256
+#define WIN_MAX_DEVS	128
+/*
+ * Per-device lookback ring. It must hold at least within_ms x peak event rate so
+ * a rule's lookback isn't truncated. isoc streams are the stress case: a uvc/uac
+ * device emits a per-URB class record (~250/s) interleaved with low-rate
+ * semantic records (uvc frames ~15/s); a small ring lets the URB flood evict the
+ * frame events before a frame rule (e.g. 3s lookback) can accumulate them. 1024
+ * covers a ~3s lookback at ~300 events/s. (128 devs x 1024 ~= 14 MB.)
+ */
+#define WIN_MAX_EVENTS	1024
 #define RETENTION_NS	(10ULL * 1000000000ULL)	/* drop idle devices after 10s */
 #define COOLDOWN_NS	(2ULL * 1000000000ULL)	/* per (device,rule) anti-spam */
 #define MAX_EVIDENCE	6
@@ -69,6 +77,7 @@ static const char *kind_str(uint32_t k)
 	case 3: return "power";
 	case 4: return "lifecycle";
 	case 5: return "class";
+	case 6: return "uvc_frame";
 	default: return "?";
 	}
 }
@@ -98,7 +107,21 @@ static long ev_field_val(const struct diag_event *e, enum diag_field f)
 	case F_LENGTH:     return e->length;
 	case F_ERROR_COUNT: return e->error_count;
 	case F_CLASS:      return e->cls;
+	case F_FRAME_BYTES:    return e->frame_bytes;
+	case F_FRAME_INTERVAL: return e->frame_interval_ns;
+	case F_FRAME_ERRORED:  return e->frame_errored;
 	default:           return 0;
+	}
+}
+
+static int match_one(const struct diag_match *m, long v)
+{
+	switch (m->op) {
+	case OP_NE:  return v != m->value;
+	case OP_GTE: return v >= m->value;
+	case OP_LTE: return v <= m->value;
+	case OP_EQ:
+	default:     return v == m->value;
 	}
 }
 
@@ -109,12 +132,8 @@ static int match_fields(const struct diag_cond *c, const struct diag_event *e)
 	for (i = 0; i < c->nmatch; i++) {
 		long v = ev_field_val(e, c->match[i].field);
 
-		if (c->match[i].neg) {
-			if (v == c->match[i].value)
-				return 0;
-		} else if (v != c->match[i].value) {
+		if (!match_one(&c->match[i], v))
 			return 0;
-		}
 	}
 	return 1;
 }
@@ -293,8 +312,22 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 			const struct diag_event *x = ev->ev[i];
 			double dt = (double)(ref_ns - x->ts_ns) / 1e6;
 
-			printf("%s{\"dt_ms\":%.1f,\"kind\":\"%s\",\"status\":%d}",
-			       i ? "," : "", dt, kind_str(x->kind), x->status);
+			if (x->kind == USBTRACE_EVT_UVC_FRAME) {
+				double fps = x->frame_interval_ns ?
+					1e9 / x->frame_interval_ns : 0.0;
+
+				printf("%s{\"dt_ms\":%.1f,\"kind\":\"uvc_frame\","
+				       "\"fps\":%.1f,\"interval_ms\":%.1f,"
+				       "\"bytes\":%u,\"errored\":%u}",
+				       i ? "," : "", dt, fps,
+				       x->frame_interval_ns / 1e6,
+				       x->frame_bytes, x->frame_errored);
+			} else {
+				printf("%s{\"dt_ms\":%.1f,\"kind\":\"%s\","
+				       "\"status\":%d}",
+				       i ? "," : "", dt, kind_str(x->kind),
+				       x->status);
+			}
 		}
 		printf("]}\n");
 		return;
@@ -317,6 +350,14 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 				       -dt, x->is_submit ? "submit" : "complete",
 				       x->ep, x->dir_in ? "IN" : "OUT",
 				       x->status);
+			else if (x->kind == USBTRACE_EVT_UVC_FRAME)
+				printf("    %+8.3fs uvc_frame %-4s %5.1ffps "
+				       "intv=%5.1fms %uB\n",
+				       -dt, x->frame_errored ? "DROP" : "ok",
+				       x->frame_interval_ns ?
+					       1e9 / x->frame_interval_ns : 0.0,
+				       x->frame_interval_ns / 1e6,
+				       x->frame_bytes);
 			else
 				printf("    %+8.3fs %s\n", -dt,
 				       kind_str(x->kind));
