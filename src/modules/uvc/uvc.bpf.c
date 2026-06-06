@@ -12,16 +12,20 @@
  *      packet (FID/EOF/ERR + PTS/SCR). This yields real FPS, frame drops and
  *      timestamp jitter.
  *
- * CO-RE only: we read struct urb / usb_iso_packet_descriptor (both in vmlinux
- * BTF) and the payload bytes via bpf_probe_read_kernel; no uvcvideo module BTF.
- * Descriptor addresses use bpf_core_field_offset (not a hardcoded offset) so the
- * flexible-array access stays portable across kernels. See docs/class.md.
+ * Wire layer (stages 1–2): CO-RE on struct urb / usb_iso_packet_descriptor
+ * (vmlinux BTF) and payload bytes via bpf_probe_read_kernel.
+ *
+ * vb2 layer (stage 3, Phase D): raw_tracepoint on vb2_buf_done (6.x) or
+ * vb2_v4l2_buf_done (5.15) passes struct vb2_buffer *; fields read via
+ * module BTF (videobuf2_common). Disabled when cfg.no_vb2 or when
+ * usbtrace_autoload_filter() skips the absent tracepoint.
  */
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
 #include "usbtrace/class_urb.bpf.h"
+#include "usbtrace/vb2.bpf.h"
 #include "usbtrace/uvc.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -64,6 +68,104 @@ struct {
 	__type(key, __u32);
 	__type(value, struct uvc_stream_state);
 } streams SEC(".maps");
+
+/* --- stage 3: videobuf2 (Phase D PR-1) ------------------------------------ */
+
+#define VB2_MIN_BYTES  100000u	/* drop tiny virtual_video noise */
+#define VB2_MAX_BYTES  (32u * 1024u * 1024u)
+
+struct vb2_qstate {
+	__u32 done_count;	/* delivery ordinal when kernel sequence absent */
+	__u64 last_done_ns;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u64);	/* vb2_queue * */
+	__type(value, struct vb2_qstate);
+} vb2_queues SEC(".maps");
+
+static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
+{
+	struct vb2_qstate init = {}, *st;
+	struct vb2_queue *q;
+	struct uvc_vb2_event *ve;
+	__u64 now, key;
+	__u32 bytesused, seq, interval = 0;
+
+	if (state != VB2_BUF_STATE_DONE)
+		return;
+
+	bytesused = BPF_CORE_READ(b, planes[0].bytesused);
+	if (bytesused && (bytesused < VB2_MIN_BYTES || bytesused > VB2_MAX_BYTES))
+		return;
+
+	q = BPF_CORE_READ(b, vb2_queue);
+	if (!q)
+		return;
+
+	key = (__u64)(unsigned long)q;
+	st = bpf_map_lookup_elem(&vb2_queues, &key);
+	if (!st) {
+		bpf_map_update_elem(&vb2_queues, &key, &init, BPF_ANY);
+		st = bpf_map_lookup_elem(&vb2_queues, &key);
+		if (!st)
+			return;
+	}
+
+	now = bpf_ktime_get_ns();
+	st->done_count++;
+	seq = st->done_count;
+	if (st->last_done_ns)
+		interval = (__u32)(now - st->last_done_ns);
+	st->last_done_ns = now;
+
+	ve = bpf_ringbuf_reserve(&events, sizeof(*ve), 0);
+	if (!ve)
+		return;
+	__builtin_memset(ve, 0, sizeof(*ve));
+	ve->hdr.kind = USBTRACE_EVT_UVC_VB2;
+	ve->hdr.size = sizeof(*ve);
+	ve->hdr.ts_ns = now;
+	ve->sequence = seq;
+	ve->bytesused = bytesused;
+	ve->vb2_timestamp = BPF_CORE_READ(b, timestamp);
+	ve->state = state;
+	ve->interval_ns = interval;
+	ve->buf_index = (__u8)BPF_CORE_READ(b, index);
+	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
+	bpf_ringbuf_submit(ve, 0);
+}
+
+/*
+ * TP_PROTO(struct vb2_queue *q, struct vb2_buffer *vb) on both kernels; only
+ * one tracepoint name exists per kernel generation (probe skips the other).
+ */
+static __always_inline int uvc_vb2_raw_done(struct bpf_raw_tracepoint_args *ctx)
+{
+	struct vb2_buffer *b;
+
+	if (cfg.no_vb2 || !ctx)
+		return 0;
+	b = (struct vb2_buffer *)ctx->args[1];
+	if (!b)
+		return 0;
+	uvc_emit_vb2(b, VB2_BUF_STATE_DONE);
+	return 0;
+}
+
+SEC("raw_tracepoint/vb2_v4l2_buf_done")
+int raw_vb2_v4l2_buf_done(struct bpf_raw_tracepoint_args *ctx)
+{
+	return uvc_vb2_raw_done(ctx);
+}
+
+SEC("raw_tracepoint/vb2_buf_done")
+int raw_vb2_buf_done(struct bpf_raw_tracepoint_args *ctx)
+{
+	return uvc_vb2_raw_done(ctx);
+}
 
 static __always_inline __u32 le32(const __u8 *p)
 {

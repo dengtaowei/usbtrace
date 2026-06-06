@@ -27,6 +27,9 @@ int usbtrace_kfunc_available(const char *name);
 /* Is a tracepoint present? 1 = yes, 0 = no, -1 = unknown. */
 int usbtrace_tracepoint_available(const char *subsys, const char *event);
 
+/* Is a tracepoint with this event name present in any subsystem? */
+int usbtrace_tracepoint_event_available(const char *event);
+
 /*
  * Walk every program of an opened (not yet loaded) bpf_object and disable
  * autoload for any whose attach target is provably absent (warns for each).
