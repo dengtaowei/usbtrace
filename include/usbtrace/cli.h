@@ -39,6 +39,11 @@ struct usbtrace_filter {
 int usbtrace_filter_getopt(int optchar, const char *arg,
 			   struct usbtrace_filter *f);
 
+/* Vanilla parser for modules whose only options are --vid/--pid/--help (most of
+ * them). Returns 0 ok, <0 on error, >0 to request help. Modules with extra
+ * options use USBTRACE_FILTER_LONGOPTS + usbtrace_filter_getopt() directly. */
+int usbtrace_filter_parse(int argc, char **argv, struct usbtrace_filter *f);
+
 /* Human-readable USB speed (enum usb_device_speed value). */
 const char *usbtrace_speed_str(unsigned char speed);
 

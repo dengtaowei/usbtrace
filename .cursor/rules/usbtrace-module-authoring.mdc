@@ -26,19 +26,55 @@ A module = `src/modules/<name>/` with three files. The build auto-discovers
   Use a `BPF_MAP_TYPE_RINGBUF` named `events`. Read kernel fields ONLY via
   `BPF_CORE_READ()`. Put user-tunable filters in `const volatile struct ... cfg = {};`
   (the `= {}` initializer is required for clang ≤10 BTF emission).
-- `<name>.c` — user space. Include `"<name>.skel.h"`, implement `parse_args`/
-  `usage`/`run`, register via `USBTRACE_MODULE_REGISTER(<name>_module)`.
+- `<name>.c` — user space. Include `"<name>.skel.h"` + `"usbtrace/run.h"`,
+  implement `parse_args`/`usage`/`run`, register via
+  `USBTRACE_MODULE_REGISTER(<name>_module)`.
 
 ## Skeleton naming
 
 `foo.bpf.c` → `foo.skel.h` with type `struct foo_bpf` and
-`foo_bpf__open/load/attach/destroy`.
+`foo_bpf__open/load/attach/destroy`. Every skeleton also exposes the generic
+`skel->skeleton` / `skel->maps.events`, which the run harness uses.
 
-## run() contract
+## run() contract — use the shared harness
 
-`open → set rodata cfg → load → attach → ring_buffer__new → poll until
-*running==false → cleanup`. Always `__builtin_memset` reserved ring records
-before filling. Mirror `src/modules/urb/` as the canonical example.
+Do NOT hand-roll load/attach/poll. The module owns only open + set cfg +
+destroy; `usbtrace_run()` (`include/usbtrace/run.h`) does load → attach →
+ring buffer → poll loop → teardown, so all modules behave identically:
+
+```c
+static int foo_run(volatile bool *running)
+{
+	struct foo_bpf *skel = foo_bpf__open();
+	int rc;
+
+	if (!skel) { ut_err("failed to open BPF skeleton"); return 1; }
+	skel->rodata->cfg.filter_vid = (unsigned short)opts.vid;
+	skel->rodata->cfg.filter_pid = (unsigned short)opts.pid;
+
+	rc = usbtrace_run(&(struct usbtrace_run){
+		.skeleton = skel->skeleton,
+		.events   = skel->maps.events,
+		.on_event = handle_event,
+		.on_start = foo_on_start,   /* optional: print "tracing..." + header */
+	}, running);
+
+	foo_bpf__destroy(skel);
+	return rc;
+}
+```
+
+- `parse_args`: if your only options are `--vid/--pid/--help`, just
+  `return usbtrace_filter_parse(argc, argv, &opts);`. Add extra options with
+  `USBTRACE_FILTER_LONGOPTS` + `usbtrace_filter_getopt()` (see `urb`).
+- `libbpf_set_print()` is done once in `main.c`; don't repeat it.
+- Always `__builtin_memset` reserved ring records before filling.
+- For a USB *class* driver, don't write a new event type — hook the driver's
+  URB-completion callback and reuse the class-traffic foundation (`class.h`,
+  `class_urb.bpf.h`, `class_stream.h`); see `.cursor/rules` / `docs/class.md`.
+
+Mirror `src/modules/urb/` (core) or `src/modules/uvc/` (class) as canonical
+examples.
 
 ## Hook portability
 

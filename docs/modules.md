@@ -8,7 +8,17 @@
 | `enum` | demo / working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
 | `lifecycle` | demo / working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
 | `power` | demo / working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
-| `diag`  | working | none (reuses urb/enum/lifecycle/power) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
+| `diag`  | working | none (reuses urb/enum/lifecycle/power/class) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
+| `uvc`   | working | kprobe `uvc_video_complete` | USB Video Class streaming health (isoc errors / frame drops). Class-traffic module; see [class.md](class.md). |
+| `uac`   | working | kprobe `snd_complete_urb` | USB Audio Class streaming health (isoc errors / xruns, capture+playback). See [class.md](class.md). |
+| `hid`   | working | kprobe `hid_irq_in`, `hid_irq_out` | USB HID report flow (in/out, errors; OUT = SET_REPORT). See [class.md](class.md). |
+| `storage` | working | kprobe `usb_stor_blocking_completion` | USB Mass Storage (BOT) transport health (stalls/timeouts before SCSI reset). See [class.md](class.md). |
+
+All four class modules share one foundation (`include/usbtrace/class*.h`,
+`src/class_stream.c`) and one normalized record (`struct class_urb_event`,
+`hdr.kind = USBTRACE_EVT_CLASS`), which is what lets them all feed `diag` with no
+per-module diag code. See [class.md](class.md) for the architecture and how to
+add another class module.
 
 ## Roadmap (planned modules)
 
@@ -18,9 +28,6 @@ Ordered by value for BSP / bring-up work (see project notes):
 |--------|--------------------|---------|
 | `hcd`     | xhci/dwc3 ring + port state | Controller-level expert view (advanced). |
 | `gadget`  | `usb_ep_queue`, `usb_gadget_giveback_request`, `usb_gadget_set_state` | Device-side (UDC) request lifecycle. |
-| `uac`     | snd-usb-audio paths + isoc URBs | USB Audio Class: underrun/overrun, isoc scheduling. |
-| `uvc`     | uvcvideo paths + isoc URBs | USB Video Class: frame drops, bandwidth. |
-| `hid`     | `hid_input_report`, int URBs | HID report flow / latency. |
 
 `diag` mode (nettrace-style rule engine, e.g. "disconnect preceded by N bulk
 errors → suspect link/power") is implemented as a cross-module consumer that

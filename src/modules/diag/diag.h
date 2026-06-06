@@ -29,15 +29,19 @@ struct diag_event {
 	uint8_t speed;
 	uint8_t portnum;
 
-	/* urb-specific */
+	/* urb/class-specific */
 	int32_t status;
 	uint32_t latency_ns;
 	uint32_t actual;
 	uint32_t length;
+	int32_t error_count;	/* class isoc packet errors (urb->error_count) */
 	uint8_t xfer_type;
 	uint8_t dir_in;
 	uint8_t ep;
 	uint8_t is_submit;
+
+	/* class-specific */
+	uint8_t cls;		/* enum usbtrace_class (when kind == CLASS) */
 
 	/* enum-specific */
 	uint8_t old_state;

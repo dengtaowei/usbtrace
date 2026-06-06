@@ -7,6 +7,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <getopt.h>
 
 #include "usbtrace/cli.h"
 #include "usbtrace/log.h"
@@ -24,6 +25,29 @@ int usbtrace_filter_getopt(int optchar, const char *arg,
 	default:
 		return 0;
 	}
+}
+
+int usbtrace_filter_parse(int argc, char **argv, struct usbtrace_filter *f)
+{
+	static const struct option lo[] = {
+		USBTRACE_FILTER_LONGOPTS,
+		{ "help", no_argument, 0, 'h' },
+		{ 0, 0, 0, 0 },
+	};
+	int c;
+
+	optind = 1; /* argv[0] is the module name; scan from there */
+	while ((c = getopt_long(argc, argv, "h", lo, NULL)) != -1) {
+		if (usbtrace_filter_getopt(c, optarg, f))
+			continue;
+		switch (c) {
+		case 'h':
+			return 1; /* request help */
+		default:
+			return -1;
+		}
+	}
+	return 0;
 }
 
 const char *usbtrace_speed_str(unsigned char speed)

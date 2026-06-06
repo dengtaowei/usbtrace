@@ -52,8 +52,9 @@ deliver the requirements already promised, then build the differentiator.
 
 ### Tier 3 — breadth (req #3 explicit targets)
 
-- [ ] Class subsystems `uac`/`uvc`/`hid`/`storage` — high value but heavier;
-      tackle after Tier 0-2 so modules sit on a trustworthy base. (See Phase 2.)
+- [x] Class subsystems `uac`/`uvc`/`hid`/`storage` — implemented on a shared
+      class-traffic foundation (core-type URB-completion hooks) that also feeds
+      `diag`. (See Phase 2 and [class.md](class.md).)
 
 ### Tier 4 — make it adoptable
 
@@ -101,14 +102,22 @@ multi-arch + VM load testing, (3) the `diag` rule engine. The first two answer
 
 ## Phase 2 — class subsystems (req #3 explicit targets)
 
-- [ ] `uac` — USB Audio Class: isoc URB scheduling, underrun/overrun, sample
-      rate/feedback endpoint health (snd-usb-audio paths).
-- [ ] `uvc` — USB Video Class: frame drops, bandwidth/altsetting, isoc errors
-      (uvcvideo paths).
-- [ ] `hid` — report flow & latency (`hid_input_report`, interrupt URBs);
-      surface unexpected SET_REPORT (BadUSB-style).
-- [ ] `storage` — Bulk-Only Transport / UAS: CBW/CSW decode, SCSI errors,
-      stall/reset recovery.
+All four class modules below share one foundation (`include/usbtrace/class*.h`,
+`src/class_stream.c`) hooking each driver's URB-completion callback with
+core-type args only (no module BTF), one normalized `class_urb_event`, and they
+all feed `diag` via a table-driven source registry. See [class.md](class.md).
+
+- [x] `uac` — USB Audio Class: isoc URB health (status, error_count, bytes,
+      capture/playback) via kprobe `snd_complete_urb`. TODO: feedback-endpoint /
+      sample-rate health, explicit xrun correlation.
+- [x] `uvc` — USB Video Class: streaming-URB health (status, isoc error_count,
+      packets/bytes) via kprobe `uvc_video_complete`. TODO: altsetting/bandwidth
+      via `usb_set_interface`, per-stream frame-drop accounting.
+- [x] `hid` — report flow via kprobe `hid_irq_in`/`hid_irq_out` (in/out, errors;
+      OUT = SET_REPORT). TODO: decode report IDs, flag unexpected SET_REPORT
+      (BadUSB-style).
+- [x] `storage` — Bulk-Only Transport via kprobe `usb_stor_blocking_completion`
+      (stall/timeout signals). TODO: CBW/CSW decode, SCSI sense, UAS driver path.
 
 ## Phase 3 — controller & device side (advanced)
 

@@ -23,8 +23,9 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-/* Filled in from user space before load (see urb.c). */
-const volatile struct urb_config cfg;
+/* Filled in from user space before load (see urb.c). The `= {}` initializer is
+ * required for correct BTF emission of const volatile globals on clang <= 10. */
+const volatile struct urb_config cfg = {};
 
 /* USB pipe bit layout (mirrors <linux/usb.h> usb_pipe* macros). */
 #define USB_DIR_IN 0x80
