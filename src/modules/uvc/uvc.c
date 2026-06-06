@@ -39,6 +39,7 @@ static struct {
 /* vb2 buffer-done running stats for the exit summary. */
 static struct {
 	unsigned long done;
+	unsigned long seq_gaps;
 	unsigned long long bytes;
 	unsigned long intervals;
 	unsigned long long sum_interval_ns;
@@ -172,6 +173,8 @@ static int handle_frame(const struct uvc_frame_event *e, size_t len)
 static void tally_vb2(const struct uvc_vb2_event *e)
 {
 	g_vbstats.done++;
+	if (e->seq_gap)
+		g_vbstats.seq_gaps++;
 	g_vbstats.bytes += e->bytesused;
 	if (e->interval_ns) {
 		g_vbstats.intervals++;
@@ -190,25 +193,27 @@ static int handle_vb2(const struct uvc_vb2_event *e, size_t len)
 		return 0;
 	tally_vb2(e);
 
-	if (!g_ctx.all)
+	if (!g_ctx.all && !e->seq_gap)
 		return 0;
 
 	if (usbtrace_json) {
 		char comm[2 * USBTRACE_COMM_LEN + 1];
 
-		printf("{\"event\":\"uvc_vb2\",\"sequence\":%u,\"bytesused\":%u,"
-		       "\"interval_us\":%.1f,\"fps\":%.1f,\"state\":%u,"
-		       "\"buf_index\":%u,\"vb2_ts\":%llu,\"vid\":\"0x%04x\","
-		       "\"pid\":\"0x%04x\",\"bus\":%u,\"dev\":%u,\"comm\":\"%s\"}\n",
-		       e->sequence, e->bytesused, e->interval_ns / 1000.0,
-		       fps_of(e->interval_ns), e->state, e->buf_index,
-		       (unsigned long long)e->vb2_timestamp, e->vid, e->product,
-		       e->busnum, e->devnum,
+		printf("{\"event\":\"uvc_vb2\",\"sequence\":%u,\"seq_gap\":%u,"
+		       "\"bytesused\":%u,\"interval_us\":%.1f,\"fps\":%.1f,"
+		       "\"state\":%u,\"buf_index\":%u,\"vb2_ts\":%llu,"
+		       "\"vid\":\"0x%04x\",\"pid\":\"0x%04x\",\"bus\":%u,"
+		       "\"dev\":%u,\"comm\":\"%s\"}\n",
+		       e->sequence, e->seq_gap, e->bytesused,
+		       e->interval_ns / 1000.0, fps_of(e->interval_ns), e->state,
+		       e->buf_index, (unsigned long long)e->vb2_timestamp,
+		       e->vid, e->product, e->busnum, e->devnum,
 		       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
 	} else {
-		printf("vb2    seq=%-5u %7uB intv=%6.1fms fps=%5.1f idx=%u %s\n",
-		       e->sequence, e->bytesused, e->interval_ns / 1e6,
-		       fps_of(e->interval_ns), e->buf_index, e->comm);
+		printf("vb2    %-4s seq=%-5u %7uB intv=%6.1fms fps=%5.1f idx=%u %s\n",
+		       e->seq_gap ? "GAP" : "ok", e->sequence, e->bytesused,
+		       e->interval_ns / 1e6, fps_of(e->interval_ns), e->buf_index,
+		       e->comm);
 	}
 	return 0;
 }
@@ -292,9 +297,9 @@ static void uvc_on_stop(void)
 			(double)g_vbstats.sum_interval_ns / g_vbstats.intervals : 0;
 
 		printf("{\"event\":\"uvc_vb2_summary\",\"done\":%lu,"
-		       "\"bytes\":%llu,\"avg_fps\":%.1f,"
+		       "\"seq_gaps\":%lu,\"bytes\":%llu,\"avg_fps\":%.1f,"
 		       "\"min_fps\":%.1f,\"max_fps\":%.1f}\n",
-		       g_vbstats.done, g_vbstats.bytes,
+		       g_vbstats.done, g_vbstats.seq_gaps, g_vbstats.bytes,
 		       fps_of((unsigned int)avg), fps_of(g_vbstats.max_interval_ns),
 		       fps_of(g_vbstats.min_interval_ns));
 		return;
@@ -303,8 +308,9 @@ static void uvc_on_stop(void)
 	fprintf(stderr,
 		"\n--- uvc vb2 summary ---\n"
 		"buffers done:    %lu\n"
+		"seq gaps:        %lu\n"
 		"avg bytesused:   %llu B\n",
-		g_vbstats.done,
+		g_vbstats.done, g_vbstats.seq_gaps,
 		g_vbstats.done ? g_vbstats.bytes / g_vbstats.done : 0);
 	if (g_vbstats.intervals) {
 		double avg = (double)g_vbstats.sum_interval_ns /

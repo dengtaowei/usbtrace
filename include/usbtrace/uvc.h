@@ -55,9 +55,10 @@ struct uvc_frame_event {
 };
 
 /*
- * One videobuf2 buffer completion (stage 3). `sequence` is a per-queue delivery
- * ordinal maintained in BPF (PR-1); kernel vb2 sequence may come from tracepoint
- * fields in PR-2. `interval_ns` drives vb2-side FPS (prev done -> this done).
+ * One videobuf2 buffer completion (stage 3). `sequence` is the kernel
+ * vb2_v4l2_buffer.sequence when module BTF allows CO-RE; otherwise a per-queue
+ * delivery ordinal. `seq_gap` is 1 when kernel sequence jumped (authoritative
+ * vb2-side drop). `interval_ns` drives vb2-side FPS (prev done -> this done).
  */
 struct uvc_vb2_event {
 	struct usbtrace_event_hdr hdr;	/* kind = USBTRACE_EVT_UVC_VB2 */
@@ -68,6 +69,8 @@ struct uvc_vb2_event {
 	__u8  state;		/* enum vb2_buffer_state at completion */
 	__u32 interval_ns;
 	__u8  buf_index;	/* vb2_buffer->index */
+	__u8  seq_gap;		/* 1 = kernel sequence != last + 1 (see PR-2) */
+	__u8  _pad;
 
 	__u16 vid;		/* 0 until queue->device walk (PR-1) */
 	__u16 product;

@@ -30,6 +30,16 @@ struct vb2_plane {
 
 struct vb2_queue;
 
+struct v4l2_timecode {
+	__u32 type;
+	__u32 flags;
+	__u8 frames;
+	__u8 seconds;
+	__u8 minutes;
+	__u8 hours;
+	__u8 userbits[4];
+} __attribute__((preserve_access_index));
+
 struct vb2_buffer {
 	struct vb2_queue *vb2_queue;
 	unsigned int index;
@@ -37,10 +47,16 @@ struct vb2_buffer {
 	unsigned int memory;
 	unsigned int num_planes;
 	__u64 timestamp;
-	/* sequence lives in vb2_v4l2_buffer on 5.15, not vb2_buffer; PR-1 uses
-	 * per-queue done_count instead (PR-2 may read kernel seq via tracepoint).
-	 */
 	struct vb2_plane planes[8];
+} __attribute__((preserve_access_index));
+
+/* videobuf2-v4l2: raw_tp passes struct vb2_buffer * = &vbuf->vb2_buf */
+struct vb2_v4l2_buffer {
+	struct vb2_buffer vb2_buf;
+	__u32 flags;
+	__u32 field;
+	struct v4l2_timecode timecode;
+	__u32 sequence;
 } __attribute__((preserve_access_index));
 
 #endif /* __USBTRACE_VB2_BPF_H */

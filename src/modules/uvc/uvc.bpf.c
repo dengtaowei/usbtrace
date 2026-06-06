@@ -77,7 +77,39 @@ struct {
 struct vb2_qstate {
 	__u32 done_count;	/* delivery ordinal when kernel sequence absent */
 	__u64 last_done_ns;
+	__u32 last_sequence;	/* previous kernel vb2 sequence (PR-2) */
+	__u8  have_last_seq;
+	__u8  _pad[3];
 };
+
+/* Kernel vb2_v4l2_buffer.sequence via embedded vb2_buf pointer (module BTF). */
+static __always_inline __u32 vb2_kernel_sequence(struct vb2_buffer *b, __u8 *ok)
+{
+	struct vb2_v4l2_buffer *vbuf;
+	__u64 off;
+
+	*ok = 0;
+	if (!b)
+		return 0;
+	off = bpf_core_field_offset(struct vb2_v4l2_buffer, vb2_buf);
+	if ((long)off < 0)
+		return 0;
+	vbuf = (struct vb2_v4l2_buffer *)((char *)b - off);
+	*ok = 1;
+	return BPF_CORE_READ(vbuf, sequence);
+}
+
+static __always_inline __u8 vb2_seq_gap(__u32 last, __u32 cur)
+{
+	__u32 expected;
+
+	if (cur == last)
+		return 0;
+	expected = last + 1;
+	if (last == 0xffffffff)
+		expected = 0;
+	return cur != expected;
+}
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -93,6 +125,7 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 	struct uvc_vb2_event *ve;
 	__u64 now, key;
 	__u32 bytesused, seq, interval = 0;
+	__u8 kernel_seq_ok = 0, seq_gap = 0;
 
 	if (state != VB2_BUF_STATE_DONE)
 		return;
@@ -116,7 +149,15 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 
 	now = bpf_ktime_get_ns();
 	st->done_count++;
-	seq = st->done_count;
+	seq = vb2_kernel_sequence(b, &kernel_seq_ok);
+	if (kernel_seq_ok) {
+		if (st->have_last_seq)
+			seq_gap = vb2_seq_gap(st->last_sequence, seq);
+		st->last_sequence = seq;
+		st->have_last_seq = 1;
+	} else {
+		seq = st->done_count;
+	}
 	if (st->last_done_ns)
 		interval = (__u32)(now - st->last_done_ns);
 	st->last_done_ns = now;
@@ -134,6 +175,7 @@ static __always_inline void uvc_emit_vb2(struct vb2_buffer *b, __u8 state)
 	ve->state = state;
 	ve->interval_ns = interval;
 	ve->buf_index = (__u8)BPF_CORE_READ(b, index);
+	ve->seq_gap = seq_gap;
 	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
 	bpf_ringbuf_submit(ve, 0);
 }

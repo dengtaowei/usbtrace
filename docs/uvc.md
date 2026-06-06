@@ -115,9 +115,6 @@ This is where "frames on the wire" becomes "frames the kernel handed up", and
 where buffer starvation / host scheduling problems live. **This is the highest
 *new* value in the whole plan** because it opens cross-layer gap analysis.
 
-> **Implementation write-up:** [Phase D — implementation guide](#phase-d--implementation-guide)
-> (architecture, hooks, event model, four-PR delivery plan, pitfalls, verification).
-
 - [ ] **vb2 buffer lifecycle.** Instrument videobuf2 via its tracepoints
       (`vb2_buf_queue`, `vb2_buf_done`, `vb2_qbuf`, `vb2_dqbuf`) or kprobe
       `vb2_buffer_done(struct vb2_buffer *, state)`. Emit a `vb2_event` per
@@ -325,9 +322,9 @@ same time window.
 
 **PR-2 — authoritative drop detection**
 
-- [ ] Per-stream BPF map `last_sequence`
-- [ ] Set `seq_gap = 1` when `sequence != last + 1` (handle wrap explicitly)
-- [ ] Summary: `vb2 frames / seq_gaps / vb2 fps (avg/worst/best)`
+- [x] Per-stream BPF map `last_sequence`
+- [x] Set `seq_gap = 1` when `sequence != last + 1` (handle wrap explicitly)
+- [x] Summary: `vb2 frames / seq_gaps / vb2 fps (avg/worst/best)`
 - [ ] **Verify:** stress the bus (high res, hub sharing) and see `seq_gap` events.
 
 **PR-3 — wire↔vb2 gap analysis (the differentiator)**
