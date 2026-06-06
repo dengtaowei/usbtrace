@@ -54,11 +54,23 @@ struct uvc_frame_event {
 	char comm[USBTRACE_COMM_LEN];
 };
 
+/* vb2 ring-buffer record subtype (hdr.kind is always USBTRACE_EVT_UVC_VB2). */
+enum uvc_vb2_op {
+	UVC_VB2_DONE = 0,
+	UVC_VB2_QUEUE = 1,	/* driver took buffer from queued list (ACTIVE) */
+	UVC_VB2_QBUF = 2,	/* userspace VIDIOC_QBUF */
+	UVC_VB2_DQBUF = 3,	/* userspace VIDIOC_DQBUF */
+	UVC_VB2_STARVED = 4,	/* wire frame arrived, no queued buffer for driver */
+};
+
 /*
- * One videobuf2 buffer completion (stage 3). `sequence` is the kernel
+ * One videobuf2 buffer transition (stage 3). `sequence` is the kernel
  * vb2_v4l2_buffer.sequence when module BTF allows CO-RE; otherwise a per-queue
  * delivery ordinal. `seq_gap` is 1 when kernel sequence jumped (authoritative
  * vb2-side drop). `interval_ns` drives vb2-side FPS (prev done -> this done).
+ *
+ * `queued` / `drv_owned` / `num_buffers` are snapshots from struct vb2_queue
+ * (queued_count / owned_by_drv_count / num_buffers) for buffer-pool accounting.
  */
 struct uvc_vb2_event {
 	struct usbtrace_event_hdr hdr;	/* kind = USBTRACE_EVT_UVC_VB2 */
@@ -70,10 +82,14 @@ struct uvc_vb2_event {
 	__u32 interval_ns;
 	__u8  buf_index;	/* vb2_buffer->index */
 	__u8  seq_gap;		/* 1 = kernel sequence != last + 1 (see PR-2) */
-	__u8  _pad;
+	__u8  vb2_op;		/* enum uvc_vb2_op */
+	__u8  starved;		/* 1 = driver had no queued buffer (pool starved) */
+	__u16 num_buffers;	/* queue pool size */
+	__u16 queued;		/* queued_count: ready for driver */
+	__u16 drv_owned;	/* owned_by_drv_count: driver filling */
 	__u32 wire_to_vb2_ns;	/* recent wire EOF -> this vb2 done (0 = none) */
 
-	__u16 vid;		/* 0 until queue->device walk (PR-1) */
+	__u16 vid;		/* filled from stream_corr when wire-correlated */
 	__u16 product;
 	__u16 busnum;
 	__u16 devnum;
@@ -89,6 +105,28 @@ struct uvc_vb2_event {
  * `no_frames` / `no_vb2` are inverted on purpose: 0 (default) means emit frame
  * / vb2 events; the standalone module disables via --no-frames / --no-vb2.
  */
+/* uvcvideo driver recv/drop (internal hooks; summary only in user space). */
+enum uvc_drv_op {
+	UVC_DRV_RECV = 0,	/* uvc_queue_next_buffer: decode finished a frame */
+	UVC_DRV_DROP = 1,	/* DROP_CORRUPTED requeue at buffer complete */
+};
+
+/* Why uvcvideo set buf->error (bitmask; a frame may hit several). */
+#define UVC_DROP_SHORT	(1 << 0)	/* bytesused != dwMaxVideoFrameSize */
+#define UVC_DROP_ISO	(1 << 1)	/* isoc packet status < 0 (USB loss) */
+#define UVC_DROP_OTHER	(1 << 2)	/* header error bit / overflow / lost EOF */
+
+struct uvc_drv_event {
+	struct usbtrace_event_hdr hdr;	/* kind = USBTRACE_EVT_UVC_DRV */
+
+	__u8 drv_op;		/* enum uvc_drv_op */
+	__u8 reason;		/* UVC_DROP_* bitmask (DROP only) */
+	__u16 vid;
+	__u16 product;
+	__u16 busnum;
+	__u16 devnum;
+};
+
 struct uvc_config {
 	__u16 filter_vid;	/* 0 = any */
 	__u16 filter_pid;	/* 0 = any */

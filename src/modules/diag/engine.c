@@ -69,6 +69,17 @@ static const char *sev_str(enum diag_severity s)
 	}
 }
 
+static const char *vb2_op_label(uint8_t op)
+{
+	switch (op) {
+	case 1:  return "queue";
+	case 2:  return "qbuf";
+	case 3:  return "dqbuf";
+	case 4:  return "STARVE";
+	default: return "done";
+	}
+}
+
 static const char *kind_str(uint32_t k)
 {
 	switch (k) {
@@ -116,6 +127,11 @@ static long ev_field_val(const struct diag_event *e, enum diag_field f)
 	case F_VB2_BYTESUSED: return e->vb2_bytesused;
 	case F_VB2_INTERVAL:   return e->vb2_interval_ns;
 	case F_WIRE_TO_VB2_NS: return e->wire_to_vb2_ns;
+	case F_VB2_OP:         return e->vb2_op;
+	case F_VB2_STARVED:    return e->vb2_starved;
+	case F_VB2_NUM_BUFFERS: return e->vb2_num_buffers;
+	case F_VB2_QUEUED:     return e->vb2_queued;
+	case F_VB2_DRV_OWNED:  return e->vb2_drv_owned;
 	default:           return 0;
 	}
 }
@@ -333,12 +349,16 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 					1e9 / x->vb2_interval_ns : 0.0;
 
 				printf("%s{\"dt_ms\":%.1f,\"kind\":\"uvc_vb2\","
-				       "\"seq\":%u,\"seq_gap\":%u,"
+				       "\"op\":\"%s\",\"seq\":%u,\"seq_gap\":%u,"
+				       "\"starved\":%u,\"pool\":%u,\"queued\":%u,"
+				       "\"drv_owned\":%u,"
 				       "\"fps\":%.1f,\"interval_ms\":%.1f,"
 				       "\"bytes\":%u,\"wire_to_vb2_ms\":%.3f}",
-				       i ? "," : "", dt, x->vb2_sequence,
-				       x->vb2_seq_gap, fps,
-				       x->vb2_interval_ns / 1e6,
+				       i ? "," : "", dt, vb2_op_label(x->vb2_op),
+				       x->vb2_sequence, x->vb2_seq_gap,
+				       x->vb2_starved, x->vb2_num_buffers,
+				       x->vb2_queued, x->vb2_drv_owned,
+				       fps, x->vb2_interval_ns / 1e6,
 				       x->vb2_bytesused,
 				       x->wire_to_vb2_ns / 1e6);
 			} else {
@@ -380,23 +400,39 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 			else if (x->kind == USBTRACE_EVT_UVC_VB2) {
 				double fps = x->vb2_interval_ns ?
 					1e9 / x->vb2_interval_ns : 0.0;
+				const char *tag = vb2_op_label(x->vb2_op);
 
-				if (x->wire_to_vb2_ns)
+				if (x->vb2_starved || x->vb2_op == 4)
+					printf("    %+8.3fs uvc_vb2 %-6s pool=%u "
+					       "q=%u drv=%u\n",
+					       -dt, tag, x->vb2_num_buffers,
+					       x->vb2_queued, x->vb2_drv_owned);
+				else if (x->vb2_op && x->vb2_op != 4)
+					printf("    %+8.3fs uvc_vb2 %-6s pool=%u "
+					       "q=%u drv=%u\n",
+					       -dt, tag, x->vb2_num_buffers,
+					       x->vb2_queued, x->vb2_drv_owned);
+				else if (x->wire_to_vb2_ns)
 					printf("    %+8.3fs uvc_vb2 %-4s seq=%u "
 					       "%5.1ffps intv=%5.1fms %uB "
-					       "w2v=%.2fms\n",
+					       "pool=%u q=%u drv=%u w2v=%.2fms\n",
 					       -dt, x->vb2_seq_gap ? "GAP" : "ok",
 					       x->vb2_sequence, fps,
 					       x->vb2_interval_ns / 1e6,
 					       x->vb2_bytesused,
+					       x->vb2_num_buffers, x->vb2_queued,
+					       x->vb2_drv_owned,
 					       x->wire_to_vb2_ns / 1e6);
 				else
 					printf("    %+8.3fs uvc_vb2 %-4s seq=%u "
-					       "%5.1ffps intv=%5.1fms %uB\n",
+					       "%5.1ffps intv=%5.1fms %uB "
+					       "pool=%u q=%u drv=%u\n",
 					       -dt, x->vb2_seq_gap ? "GAP" : "ok",
 					       x->vb2_sequence, fps,
 					       x->vb2_interval_ns / 1e6,
-					       x->vb2_bytesused);
+					       x->vb2_bytesused,
+					       x->vb2_num_buffers, x->vb2_queued,
+					       x->vb2_drv_owned);
 			}
 			else
 				printf("    %+8.3fs %s\n", -dt,

@@ -178,3 +178,15 @@ rules:
         count_gte: 3
     conclusion: "Device {vid}:{pid}: USB wire frames look clean within {window}ms but vb2 sequence gaps detected — not a USB/cable issue."
     fix: "Raise vb2 buffer count, reduce CPU contention, and check whether userspace is slow to dequeue buffers."
+
+  - id: video-vb2-starved
+    name: "UVC vb2 buffer starvation"
+    severity: warn
+    trigger: { kind: uvc_vb2 }
+    when:
+      - kind: uvc_vb2
+        match: { vb2_starved: 1 }
+        within_ms: 3000
+        count_gte: 3
+    conclusion: "Video device {vid}:{pid}: wire frames arrived {count} times with no vb2 queued buffer within {window}ms — app likely slow to QBUF."
+    fix: "Increase buffer count in the capturing app; check DQBUF→QBUF latency and CPU load."

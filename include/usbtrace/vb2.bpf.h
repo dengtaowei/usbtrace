@@ -28,7 +28,20 @@ struct vb2_plane {
 	unsigned int length;
 } __attribute__((preserve_access_index));
 
-struct vb2_queue;
+/* V4L2 buffer types we care about (capture, incl. MPLANE). */
+#define VB2_TYPE_VIDEO_CAPTURE		1
+#define VB2_TYPE_VIDEO_CAPTURE_MPLANE	9
+
+typedef struct {
+	int counter;
+} vb2_atomic_t;
+
+struct vb2_queue {
+	void *drv_priv;
+	unsigned int num_buffers;
+	unsigned int queued_count;
+	vb2_atomic_t owned_by_drv_count;
+} __attribute__((preserve_access_index));
 
 struct v4l2_timecode {
 	__u32 type;

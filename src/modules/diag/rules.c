@@ -39,7 +39,10 @@ static const struct symbol enum_syms[] = {
 	{ "RECONNECTING", 3 }, { "UNAUTHED", 4 }, { "DEFAULT", 5 },
 	{ "ADDRESS", 6 }, { "CONFIGURED", 7 }, { "SUSPENDED", 8 },
 	/* enum usbtrace_class (for `class:` field / value) */
-	{ "video", 0 }, { "audio", 1 }, { "hid", 2 }, { "storage", 3 },
+	{ "video", 0 }, { "audio", 1 }, { "hid", 2 }, 	{ "storage", 3 },
+	/* enum uvc_vb2_op (for `vb2_op:`) */
+	{ "vb2_done", 0 }, { "vb2_queue", 1 }, { "vb2_qbuf", 2 },
+	{ "vb2_dqbuf", 3 }, { "vb2_starved", 4 },
 	/* enum usbtrace_xfer_type (for `xfer_type:`) */
 	{ "isoc", 0 }, { "int", 1 }, { "control", 2 }, { "bulk", 3 },
 	{ NULL, 0 },
@@ -68,6 +71,11 @@ static const struct symbol field_syms[] = {
 	{ "vb2_bytesused", F_VB2_BYTESUSED },
 	{ "vb2_interval_ns", F_VB2_INTERVAL },
 	{ "wire_to_vb2_ns", F_WIRE_TO_VB2_NS },
+	{ "vb2_op", F_VB2_OP },
+	{ "vb2_starved", F_VB2_STARVED },
+	{ "vb2_num_buffers", F_VB2_NUM_BUFFERS },
+	{ "vb2_queued", F_VB2_QUEUED },
+	{ "vb2_drv_owned", F_VB2_DRV_OWNED },
 	{ NULL, 0 },
 };
 

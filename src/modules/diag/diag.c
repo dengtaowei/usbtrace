@@ -297,6 +297,11 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		out->vb2_interval_ns = e->interval_ns;
 		out->vb2_seq_gap = e->seq_gap;
 		out->wire_to_vb2_ns = e->wire_to_vb2_ns;
+		out->vb2_op = e->vb2_op;
+		out->vb2_starved = e->starved;
+		out->vb2_num_buffers = e->num_buffers;
+		out->vb2_queued = e->queued;
+		out->vb2_drv_owned = e->drv_owned;
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}
