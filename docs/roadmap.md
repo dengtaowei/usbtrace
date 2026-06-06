@@ -113,8 +113,9 @@ all feed `diag` via a table-driven source registry. See [class.md](class.md).
 - [x] `uvc` — USB Video Class: per-URB isoc health via `uvc_video_complete`
       **plus frame-level diagnosis** — reconstructs frames in BPF from the UVC
       payload headers (FID/EOF/ERR/PTS/SCR) for real FPS, frame drops/corruption
-      and PTS/SCR jitter; frame records feed diag (`kind: uvc_frame`). TODO:
-      altsetting/bandwidth via `usb_set_interface`.
+      and PTS/SCR jitter; frame records feed diag (`kind: uvc_frame`). Next
+      steps tracked in the phased blueprint [uvc.md](uvc.md) (jitter/bandwidth
+      signals, negotiated-format awareness, payload validation).
 - [x] `hid` — report flow via kprobe `hid_irq_in`/`hid_irq_out` (in/out, errors;
       OUT = SET_REPORT). TODO: decode report IDs, flag unexpected SET_REPORT
       (BadUSB-style).

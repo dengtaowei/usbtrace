@@ -110,6 +110,9 @@ the filter, and merges its ringbuf into the poll loop.
 
 ## uvc: frame-level diagnosis (a class module that adds depth)
 
+> Future plan for this module lives in [uvc.md](uvc.md) (phased blueprint).
+
+
 `uvc` shows the intended way to go *beyond* the shared per-URB record without
 touching it. It rides the foundation for transfer health **and** emits a second,
 richer record per assembled video frame — so `uac`/`hid`/`storage` are unchanged
@@ -208,6 +211,10 @@ rather than URBs — e.g. the built-in low-fps rule:
   interrupt context.
 - UAS mass-storage devices use the `uas` driver, not `usb-storage`; the
   `storage` module covers BOT only (extend with a `uas` hook if needed).
-- If a driver is not loaded its kprobe target is absent: a standalone module
-  exits with an attach error, while `diag` warns and skips just that source
-  (the other sources keep running).
+- If a driver is not loaded its kprobe target is absent. Hooks are
+  feature-probed per program before load (see
+  [architecture.md](architecture.md#graceful-degradation-per-program-feature-probing)):
+  a standalone module disables the missing hook and still runs on any hooks that
+  remain, exiting cleanly only if none are present; `diag` skips just that source
+  and keeps the others running. Example: `storage` on a `uas` device (no
+  `usb_stor_blocking_completion`) is skipped without a libbpf error dump.

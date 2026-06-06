@@ -107,10 +107,20 @@ For `foo.bpf.c`, the build emits `foo.skel.h` whose generated type is
 
 Run harness — `#include "usbtrace/run.h"`:
 
-- `usbtrace_run(&(struct usbtrace_run){...}, running)` — the one load → attach →
-  ring buffer → poll loop → teardown for every single-skeleton module. Optional
-  `on_start`/`on_stop` callbacks for a header line / exit summary. The module
-  only opens and destroys its skeleton (see "Adding a module" above).
+- `usbtrace_run(&(struct usbtrace_run){...}, running)` — the one feature-probe →
+  load → attach → ring buffer → poll loop → teardown for every single-skeleton
+  module. Optional `on_start`/`on_stop` callbacks for a header line / exit
+  summary. The module only opens and destroys its skeleton (see "Adding a module"
+  above).
+- **Graceful degradation is automatic.** The harness feature-probes every BPF
+  program before load and disables any whose attach target is absent on this
+  kernel, so a module with several hooks survives a single missing one (it only
+  fails if *none* attach). You get this for free — just give each program a
+  normal `SEC("kprobe/<func>")` / `SEC("tracepoint/<sub>/<evt>")`. Cross-module
+  consumers that drive the skeleton ABI directly (like `diag`) call
+  `usbtrace_autoload_filter(skel->obj)` themselves before `__load`; see
+  `usbtrace/probe.h` and
+  [architecture.md](architecture.md#graceful-degradation-per-program-feature-probing).
 
 User space — `#include "usbtrace/cli.h"`:
 
