@@ -51,21 +51,37 @@ A module's own code is just a `.bpf.c` (declare ringbuf + cfg, one kprobe per
 hook calling the helper) and a small `.c` (open skeleton, set filter, call
 `usbtrace_run()` with `class_stream_on_event` + a summary callback).
 
-## The module-BTF rule (the key constraint)
+## vmlinux BTF vs module BTF (portability tiers)
 
-CO-RE relocations resolve against `/sys/kernel/btf/vmlinux`, which holds only
-**built-in** types. Class drivers (uvcvideo, snd-usb-audio, usbhid, usb-storage)
-are loadable modules; their private structs live in module BTF
-(`/sys/kernel/btf/<module>`), **not** vmlinux BTF.
+CO-RE relocations resolve against BTF. `/sys/kernel/btf/vmlinux` holds the
+kernel's **built-in** types and is essentially always present once
+`CONFIG_DEBUG_INFO_BTF=y` (which any CO-RE tool already needs). Class drivers
+(uvcvideo, snd-usb-audio, usbhid, usb-storage) are loadable modules; their
+private structs live in **module BTF** (`/sys/kernel/btf/<module>`), which
+requires `CONFIG_DEBUG_INFO_BTF_MODULES=y`, kernel ≥5.11 for CO-RE against it,
+and the module to be loaded.
 
-So every class hook here is a function whose argument is a **core** type
-(`struct urb *`), and the shared helper reads only `urb` and `urb->dev`
-(`struct usb_device`). This is why one helper works for all four drivers and
-stays portable across kernels/arches.
+These are two **tiers**, not a prohibition:
 
-**Rule of thumb when adding a hook:** pick a function that takes `struct urb *`
-(or `struct usb_device *`). Driver-private structs need module BTF — avoid unless
-necessary.
+- **Baseline tier (vmlinux BTF).** Hook functions whose arguments are built-in
+  types (`struct urb *`, `struct usb_device *`) and read only those. This is the
+  most portable path — one program across every kernel/arch — so the shared
+  `usbtrace_class_urb_emit()` helper deliberately stays here, which is why one
+  helper serves all four class drivers. **Prefer this whenever a built-in type
+  carries the signal you need.**
+- **Module-BTF tier (opt-in, deeper signals).** When the data only exists in a
+  driver-private struct (e.g. `struct vb2_buffer` for the V4L2/videobuf2 layer),
+  reading module BTF is allowed. Declare the needed fields with
+  `preserve_access_index` (or load the module's BTF) and **feature-probe + degrade
+  gracefully**: `usbtrace_autoload_filter()` already disables programs whose hook
+  is absent, and the same pattern gates a kernel that lacks module BTF — so the
+  baseline tier keeps working where the deeper tier can't load. See
+  [uvc.md](uvc.md) for the planned V4L2/vb2 work built on this tier.
+
+**Rule of thumb when adding a hook:** reach for a built-in type
+(`struct urb *` / `struct usb_device *`) first because it's free and portable;
+step up to module BTF when the diagnostic value justifies the extra
+feature-probing and the narrower kernel support.
 
 ## Adding a new class module
 
