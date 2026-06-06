@@ -182,11 +182,13 @@ DSL operators available: `=`, `!v`, `>=v`, `<=v` (see `match_one()`).
 
 These shape *how*, not *whether*. None of them remove a feature from the plan.
 
-- **Stages 3–4 need module/extra BTF.** `struct vb2_buffer`, the vb2/v4l2
-  tracepoints, and `videodev`/`videobuf2_common` live in module BTF (they are
-  loadable modules), not `vmlinux` BTF. Kernel ≥5.11 supports CO-RE against
-  module BTF; load that BTF explicitly and degrade gracefully so a kernel without
-  it still runs stages 1–2. **The graceful-degradation half already exists**:
+- **Stages 3–4 use the module-BTF tier (supported, opt-in).** `struct
+  vb2_buffer`, the vb2/v4l2 tracepoints, and `videodev`/`videobuf2_common` live
+  in module BTF (they are loadable modules), not `vmlinux` BTF. This is an
+  explicitly allowed tier (see [class.md](class.md#vmlinux-btf-vs-module-btf-portability-tiers)),
+  not a forbidden one: kernel ≥5.11 supports CO-RE against module BTF, so load it
+  and degrade gracefully so a kernel without it still runs stages 1–2.
+  **The graceful-degradation half already exists**:
   `usbtrace_autoload_filter()` (`src/probe.c`) feature-probes every BPF program
   before load and disables those whose hook is absent (functions via
   kallsyms/ftrace, tracepoints via tracefs), so optional stage 3–4 programs can
