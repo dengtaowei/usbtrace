@@ -30,6 +30,7 @@ enum usbtrace_event_kind {
 	USBTRACE_EVT_UVC_FRAME = 6, /* one assembled UVC video frame; see uvc.h.
 				    * uvc emits this alongside its EVT_CLASS records. */
 	USBTRACE_EVT_UVC_VB2 = 7, /* vb2 buffer done (stage 3); see uvc.h */
+	USBTRACE_EVT_UVC_DRV = 8, /* uvcvideo driver recv/drop; see uvc.h */
 };
 
 /* Common envelope at the head of every event pushed to the ring buffer.

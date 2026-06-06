@@ -105,6 +105,28 @@ struct uvc_vb2_event {
  * `no_frames` / `no_vb2` are inverted on purpose: 0 (default) means emit frame
  * / vb2 events; the standalone module disables via --no-frames / --no-vb2.
  */
+/* uvcvideo driver recv/drop (internal hooks; summary only in user space). */
+enum uvc_drv_op {
+	UVC_DRV_RECV = 0,	/* uvc_queue_next_buffer: decode finished a frame */
+	UVC_DRV_DROP = 1,	/* DROP_CORRUPTED requeue at buffer complete */
+};
+
+/* Why uvcvideo set buf->error (bitmask; a frame may hit several). */
+#define UVC_DROP_SHORT	(1 << 0)	/* bytesused != dwMaxVideoFrameSize */
+#define UVC_DROP_ISO	(1 << 1)	/* isoc packet status < 0 (USB loss) */
+#define UVC_DROP_OTHER	(1 << 2)	/* header error bit / overflow / lost EOF */
+
+struct uvc_drv_event {
+	struct usbtrace_event_hdr hdr;	/* kind = USBTRACE_EVT_UVC_DRV */
+
+	__u8 drv_op;		/* enum uvc_drv_op */
+	__u8 reason;		/* UVC_DROP_* bitmask (DROP only) */
+	__u16 vid;
+	__u16 product;
+	__u16 busnum;
+	__u16 devnum;
+};
+
 struct uvc_config {
 	__u16 filter_vid;	/* 0 = any */
 	__u16 filter_pid;	/* 0 = any */

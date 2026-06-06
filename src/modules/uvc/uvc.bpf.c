@@ -25,7 +25,9 @@
 #include <bpf/bpf_tracing.h>
 
 #include "usbtrace/class_urb.bpf.h"
+#include "usbtrace/filter.bpf.h"
 #include "usbtrace/vb2.bpf.h"
+#include "usbtrace/uvc.bpf.h"
 #include "usbtrace/uvc.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -637,5 +639,265 @@ int BPF_KPROBE(on_video_complete, struct urb *urb)
 	/* Per-frame reconstruction (uvc-specific). */
 	if (!cfg.no_frames)
 		uvc_parse_frames(urb);
+	return 0;
+}
+
+/* --- uvcvideo driver: recv/drop counters only (module-BTF tier) ------------ */
+
+static __always_inline __u8 uvc_buf_is_video(struct uvc_buffer *buf)
+{
+	__u32 type;
+
+	if (!buf)
+		return 0;
+	type = BPF_CORE_READ(buf, buf.vb2_buf.type);
+	return type == VB2_TYPE_VIDEO_CAPTURE ||
+	       type == VB2_TYPE_VIDEO_CAPTURE_MPLANE;
+}
+
+static __always_inline int uvc_stream_usb(struct uvc_streaming *stream,
+					  __u16 *vid, __u16 *pid,
+					  __u16 *bus, __u16 *devnum)
+{
+	struct uvc_device *dev;
+	struct usb_device *udev;
+
+	if (!stream)
+		return 0;
+	dev = BPF_CORE_READ(stream, dev);
+	if (!dev)
+		return 0;
+	udev = BPF_CORE_READ(dev, udev);
+	if (!usbtrace_dev_match(udev, cfg.filter_vid, cfg.filter_pid, vid, pid))
+		return 0;
+	*bus = BPF_CORE_READ(udev, bus, busnum);
+	*devnum = BPF_CORE_READ(udev, devnum);
+	return 1;
+}
+
+static __always_inline struct uvc_buffer *uvc_buf_from_ref(struct kref *ref)
+{
+	__u64 off;
+
+	if (!ref)
+		return NULL;
+	off = bpf_core_field_offset(struct uvc_buffer, ref);
+	if ((long)off < 0)
+		return NULL;
+	return (struct uvc_buffer *)((char *)ref - off);
+}
+
+static __always_inline struct uvc_video_queue *
+uvc_buf_video_queue(struct uvc_buffer *buf)
+{
+	struct vb2_v4l2_buffer *vbuf;
+	struct vb2_buffer *vb;
+	struct vb2_queue *vq;
+	__u64 off;
+
+	if (!buf)
+		return NULL;
+	off = bpf_core_field_offset(struct uvc_buffer, buf);
+	if ((long)off < 0)
+		return NULL;
+	vbuf = (struct vb2_v4l2_buffer *)((char *)buf + off);
+	off = bpf_core_field_offset(struct vb2_v4l2_buffer, vb2_buf);
+	if ((long)off < 0)
+		return NULL;
+	vb = (struct vb2_buffer *)((char *)vbuf + off);
+	vq = BPF_CORE_READ(vb, vb2_queue);
+	if (!vq)
+		return NULL;
+	return (struct uvc_video_queue *)BPF_CORE_READ(vq, drv_priv);
+}
+
+/* Per-buffer error cause, set at the decode source, read+cleared at complete.
+ * Key = (u64)uvc_buffer*; value = UVC_DROP_* bits gathered before complete. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u64);
+	__type(value, __u8);
+} drv_drop_cause SEC(".maps");
+
+static __always_inline void uvc_drop_cause_add(struct uvc_buffer *buf, __u8 bit)
+{
+	__u64 key = (__u64)(unsigned long)buf;
+	__u8 *cur, init;
+
+	cur = bpf_map_lookup_elem(&drv_drop_cause, &key);
+	if (cur) {
+		*cur |= bit;
+		return;
+	}
+	init = bit;
+	bpf_map_update_elem(&drv_drop_cause, &key, &init, BPF_ANY);
+}
+
+static __always_inline __u8 uvc_drop_cause_take(struct uvc_buffer *buf)
+{
+	__u64 key = (__u64)(unsigned long)buf;
+	__u8 *cur, val = 0;
+
+	cur = bpf_map_lookup_elem(&drv_drop_cause, &key);
+	if (cur) {
+		val = *cur;
+		bpf_map_delete_elem(&drv_drop_cause, &key);
+	}
+	return val;
+}
+
+static __always_inline void uvc_drv_emit(__u8 op, __u8 reason, __u16 vid,
+					 __u16 pid, __u16 bus, __u16 devnum,
+					 __u64 now)
+{
+	struct uvc_drv_event *de;
+
+	de = bpf_ringbuf_reserve(&events, sizeof(*de), 0);
+	if (!de)
+		return;
+	__builtin_memset(de, 0, sizeof(*de));
+	de->hdr.kind = USBTRACE_EVT_UVC_DRV;
+	de->hdr.size = sizeof(*de);
+	de->hdr.ts_ns = now;
+	de->drv_op = op;
+	de->reason = reason;
+	de->vid = vid;
+	de->product = pid;
+	de->busnum = bus;
+	de->devnum = devnum;
+	bpf_ringbuf_submit(de, 0);
+}
+
+/* Decode finished a video frame (uvc_video_decode_isoc/bulk path). */
+SEC("kprobe/uvc_queue_next_buffer")
+int BPF_KPROBE(on_queue_next, struct uvc_video_queue *queue,
+	       struct uvc_buffer *buf)
+{
+	struct uvc_streaming *stream;
+	__u16 vid = 0, pid = 0, bus = 0, devnum = 0;
+	__u64 off, now;
+
+	if (!queue || !buf || !uvc_buf_is_video(buf))
+		return 0;
+
+	off = bpf_core_field_offset(struct uvc_streaming, queue);
+	if ((long)off < 0)
+		return 0;
+	stream = (struct uvc_streaming *)((char *)queue - off);
+	if (!uvc_stream_usb(stream, &vid, &pid, &bus, &devnum))
+		return 0;
+
+	now = bpf_ktime_get_ns();
+	uvc_drv_emit(UVC_DRV_RECV, 0, vid, pid, bus, devnum, now);
+	return 0;
+}
+
+/*
+ * Tag a buffer with UVC_DROP_ISO when this URB lost isoc packets, mirroring
+ * uvc_video_decode_isoc(): iso_frame_desc[i].status < 0 -> buf->error = 1.
+ * Runs once per URB; only touches the map when a loss is actually seen.
+ */
+SEC("kprobe/uvc_video_decode_isoc")
+int BPF_KPROBE(on_decode_isoc, struct uvc_urb *uvc_urb, struct uvc_buffer *buf)
+{
+	struct urb *urb;
+	struct uvc_streaming *stream;
+	__u16 vid = 0, pid = 0, bus = 0, devnum = 0;
+	__u64 descs_off;
+	int npkts, i;
+
+	if (!uvc_urb || !buf || !uvc_buf_is_video(buf))
+		return 0;
+
+	stream = BPF_CORE_READ(uvc_urb, stream);
+	if (!uvc_stream_usb(stream, &vid, &pid, &bus, &devnum))
+		return 0;
+
+	urb = BPF_CORE_READ(uvc_urb, urb);
+	if (!urb)
+		return 0;
+	npkts = BPF_CORE_READ(urb, number_of_packets);
+	descs_off = bpf_core_field_offset(struct urb, iso_frame_desc);
+
+	for (i = 0; i < UVC_MAX_ISOC_PKTS; i++) {
+		struct usb_iso_packet_descriptor d;
+
+		if (i >= npkts)
+			break;
+		if (bpf_probe_read_kernel(&d, sizeof(d),
+					  (char *)urb + descs_off +
+						  (__u64)i * sizeof(d)))
+			continue;
+		if ((int)d.status < 0) {
+			uvc_drop_cause_add(buf, UVC_DROP_ISO);
+			break;
+		}
+	}
+	return 0;
+}
+
+/*
+ * Frame drop decision: uvc_queue_buffer_complete() requeues when
+ * DROP_CORRUPTED && buf->error (validate_buffer short, decode hdr/iso/ovf…).
+ * Only runs as kref finalizer — not per async memcpy chunk.
+ */
+SEC("kprobe/uvc_queue_buffer_complete")
+int BPF_KPROBE(on_queue_complete, struct kref *ref)
+{
+	struct uvc_buffer *buf;
+	struct uvc_video_queue *queue;
+	struct uvc_streaming *stream;
+	const struct uvc_format *fmt;
+	__u16 vid = 0, pid = 0, bus = 0, devnum = 0;
+	__u64 off, now;
+	__u32 qflags, bytesused, maxsize, fmtflags = 0;
+	__u8 err, reason;
+
+	buf = uvc_buf_from_ref(ref);
+	if (!buf || !uvc_buf_is_video(buf)) {
+		uvc_drop_cause_take(buf);	/* keep the map from leaking */
+		return 0;
+	}
+
+	queue = uvc_buf_video_queue(buf);
+	if (!queue) {
+		uvc_drop_cause_take(buf);
+		return 0;
+	}
+
+	off = bpf_core_field_offset(struct uvc_streaming, queue);
+	if ((long)off < 0)
+		return 0;
+	stream = (struct uvc_streaming *)((char *)queue - off);
+	if (!uvc_stream_usb(stream, &vid, &pid, &bus, &devnum)) {
+		uvc_drop_cause_take(buf);
+		return 0;
+	}
+
+	/* Pop any decode-time cause regardless, so requeued/good buffers that
+	 * are reused don't carry stale bits into a later frame. */
+	reason = uvc_drop_cause_take(buf);
+
+	qflags = BPF_CORE_READ(queue, flags);
+	err = (__u8)BPF_CORE_READ(buf, error);
+	if (!(qflags & UVC_QUEUE_DROP_CORRUPTED) || !err)
+		return 0;
+
+	/* Short frame: matches kernel uvc_video_validate_buffer() (inlined). */
+	bytesused = BPF_CORE_READ(buf, bytesused);
+	maxsize = BPF_CORE_READ(stream, ctrl.dwMaxVideoFrameSize);
+	fmt = BPF_CORE_READ(stream, cur_format);
+	if (fmt)
+		fmtflags = BPF_CORE_READ(fmt, flags);
+	if (!(fmtflags & UVC_FMT_FLAG_COMPRESSED) && maxsize &&
+	    bytesused != maxsize)
+		reason |= UVC_DROP_SHORT;
+
+	if (!reason)
+		reason = UVC_DROP_OTHER;	/* header err bit / overflow / lost EOF */
+
+	now = bpf_ktime_get_ns();
+	uvc_drv_emit(UVC_DRV_DROP, reason, vid, pid, bus, devnum, now);
 	return 0;
 }

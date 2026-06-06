@@ -24,6 +24,7 @@ static struct class_stream_ctx g_ctx;	/* URB-health tally + --all */
 static bool g_no_frames;
 static bool g_no_vb2;
 static unsigned int g_fps_target;
+static struct uvc_bpf *g_skel;	/* for post-load hook-availability checks */
 
 /* Frame-level running stats for the exit summary. */
 static struct {
@@ -49,6 +50,15 @@ static struct {
 	unsigned int min_interval_ns;
 	unsigned int max_interval_ns;
 } g_vbstats;
+
+/* uvcvideo driver recv/drop (internal hooks; summary only). */
+static struct {
+	unsigned long received;
+	unsigned long dropped;
+	unsigned long drop_short;	/* size != dwMaxVideoFrameSize */
+	unsigned long drop_iso;		/* isoc packet status < 0 */
+	unsigned long drop_other;	/* header err bit / overflow / lost EOF */
+} g_drvstats;
 
 static const char *vb2_op_str(__u8 op)
 {
@@ -257,6 +267,29 @@ static int handle_vb2(const struct uvc_vb2_event *e, size_t len)
 	return 0;
 }
 
+static void tally_drv(const struct uvc_drv_event *e)
+{
+	if (e->drv_op == UVC_DRV_RECV) {
+		g_drvstats.received++;
+	} else if (e->drv_op == UVC_DRV_DROP) {
+		g_drvstats.dropped++;
+		if (e->reason & UVC_DROP_SHORT)
+			g_drvstats.drop_short++;
+		if (e->reason & UVC_DROP_ISO)
+			g_drvstats.drop_iso++;
+		if (e->reason & UVC_DROP_OTHER)
+			g_drvstats.drop_other++;
+	}
+}
+
+static int handle_drv(const struct uvc_drv_event *e, size_t len)
+{
+	if (len < sizeof(*e))
+		return 0;
+	tally_drv(e);
+	return 0;
+}
+
 /* Route by record kind: frames/vb2 here, URB-health to the shared class consumer. */
 static int uvc_on_event(void *ctx, void *data, size_t len)
 {
@@ -268,6 +301,8 @@ static int uvc_on_event(void *ctx, void *data, size_t len)
 		return handle_frame(data, len);
 	if (h->kind == USBTRACE_EVT_UVC_VB2)
 		return handle_vb2(data, len);
+	if (h->kind == USBTRACE_EVT_UVC_DRV)
+		return handle_drv(data, len);
 	return class_stream_on_event(ctx, data, len);
 }
 
@@ -358,6 +393,50 @@ static void uvc_vb2_summary(void)
 	}
 }
 
+/* The drop hook (uvc_queue_buffer_complete) is static; on some kernels it is
+ * inlined and the kprobe can't attach. Detect that so "dropped: 0" isn't read
+ * as "no drops" when it actually means "drop detection unavailable". */
+static bool uvc_drop_hook_active(void)
+{
+	return g_skel &&
+	       bpf_program__autoload(g_skel->progs.on_queue_complete);
+}
+
+static void uvc_drv_summary(void)
+{
+	bool drop_ok = uvc_drop_hook_active();
+
+	if (usbtrace_json) {
+		printf("{\"event\":\"uvc_drv_summary\",\"received\":%lu,"
+		       "\"dropped\":%lu,\"drop_short\":%lu,\"drop_iso\":%lu,"
+		       "\"drop_other\":%lu,\"drop_hook\":%s}\n",
+		       g_drvstats.received, g_drvstats.dropped,
+		       g_drvstats.drop_short, g_drvstats.drop_iso,
+		       g_drvstats.drop_other, drop_ok ? "true" : "false");
+		return;
+	}
+
+	fprintf(stderr,
+		"\n--- uvc driver summary ---\n"
+		"frames received: %lu\n",
+		g_drvstats.received);
+	if (!drop_ok) {
+		fprintf(stderr,
+			"frames dropped:  n/a  (uvc_queue_buffer_complete hook "
+			"unavailable on this kernel)\n");
+		return;
+	}
+	fprintf(stderr, "frames dropped:  %lu\n", g_drvstats.dropped);
+	if (g_drvstats.dropped) {
+		fprintf(stderr,
+			"  short frame:   %lu  (bytesused != dwMaxVideoFrameSize)\n"
+			"  isoc loss:     %lu  (USB packet status < 0)\n"
+			"  other:         %lu  (header error bit / overflow / lost EOF)\n",
+			g_drvstats.drop_short, g_drvstats.drop_iso,
+			g_drvstats.drop_other);
+	}
+}
+
 static void uvc_gap_summary(void)
 {
 	double wire_fps = 0, vb2_fps = 0, wire_vb2_ms = 0;
@@ -394,7 +473,14 @@ static void uvc_gap_summary(void)
 			fprintf(stderr,
 				"note: vb2 starvation — app may be slow to "
 				"QBUF; driver had no queued buffer at wire EOF.\n");
-		if (g_vbstats.seq_gaps && g_fstats.errored == 0)
+		if (uvc_drop_hook_active() && g_drvstats.dropped &&
+		    g_drvstats.dropped == g_vbstats.seq_gaps)
+			fprintf(stderr,
+				"note: %lu frame(s) dropped by uvcvideo "
+				"(DROP_CORRUPTED requeue) — matches vb2 seq "
+				"gaps; not a USB-wire loss.\n",
+				g_drvstats.dropped);
+		else if (g_vbstats.seq_gaps && g_fstats.errored == 0)
 			fprintf(stderr,
 				"note: vb2 gaps with no wire drops — USB path "
 				"may be fine; check driver queue / scheduling.\n");
@@ -411,6 +497,7 @@ static void uvc_on_stop(void)
 
 	if (!g_no_frames)
 		uvc_frame_summary();
+	uvc_drv_summary();
 	if (!g_no_vb2)
 		uvc_vb2_summary();
 	if (!g_no_frames && !g_no_vb2)
@@ -431,6 +518,7 @@ static int uvc_run(volatile bool *running)
 	skel->rodata->cfg.no_frames = g_no_frames ? 1 : 0;
 	skel->rodata->cfg.no_vb2 = g_no_vb2 ? 1 : 0;
 	skel->rodata->cfg.fps_target = g_fps_target;
+	g_skel = skel;
 
 	rc = usbtrace_run(&(struct usbtrace_run){
 		.skeleton = skel->skeleton,
@@ -441,6 +529,7 @@ static int uvc_run(volatile bool *running)
 		.on_stop = uvc_on_stop,
 	}, running);
 
+	g_skel = NULL;
 	uvc_bpf__destroy(skel);
 	return rc;
 }

@@ -37,6 +37,7 @@ typedef struct {
 } vb2_atomic_t;
 
 struct vb2_queue {
+	void *drv_priv;
 	unsigned int num_buffers;
 	unsigned int queued_count;
 	vb2_atomic_t owned_by_drv_count;
