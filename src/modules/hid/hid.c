@@ -69,9 +69,8 @@ struct hid_rate_slot {
 	__u64 err_urbs;
 
 	/* majority vote on actual_length for role guess */
-	__u32 len4;
-	__u32 len8;
-	__u32 len9;
+	__u32 len_mouse;
+	__u32 len_kbd;
 	__u32 len_other;
 };
 
@@ -188,23 +187,25 @@ static struct hid_rate_slot *slot_get(__u16 bus, __u16 dev, __u8 ep,
 
 static void slot_note_len(struct hid_rate_slot *s, __u32 len)
 {
+	/*
+	 * Boot mouse reports 4 bytes; boot keyboard 8 (9 with a report ID), and
+	 * a bitmap keyboard (modifier byte + 120-bit keycode bitmap) 17.
+	 */
 	if (len == 4)
-		s->len4++;
-	else if (len == 8)
-		s->len8++;
-	else if (len == 9)
-		s->len9++;
+		s->len_mouse++;
+	else if (len == 8 || len == 9 || len == 17)
+		s->len_kbd++;
 	else
 		s->len_other++;
 
 	/* sticky classify once we have a few samples */
 	if (s->role != HID_ROLE_UNK)
 		return;
-	if (s->len4 + s->len8 + s->len9 + s->len_other < 8)
+	if (s->len_mouse + s->len_kbd + s->len_other < 8)
 		return;
-	if (s->len4 >= s->len8 && s->len4 >= s->len9 && s->len4 >= s->len_other)
+	if (s->len_mouse >= s->len_kbd && s->len_mouse >= s->len_other)
 		s->role = HID_ROLE_MOUSE;
-	else if ((s->len8 + s->len9) >= s->len4)
+	else if (s->len_kbd >= s->len_other)
 		s->role = HID_ROLE_KBD;
 }
 
