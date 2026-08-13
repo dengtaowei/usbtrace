@@ -10,13 +10,15 @@ stay tiny, consistent, and trivially extensible — and so they all cooperate wi
 |--------|--------|---------|--------|
 | `uvc` | uvcvideo | `uvc_video_complete` | isoc errors **+ frame-level**: real FPS, frame drops, PTS/SCR (see below) |
 | `uac` | snd-usb-audio | `snd_complete_urb` | audio isoc errors / xruns (IN=capture, OUT=playback) |
-| `hid` | usbhid | `hid_irq_in`, `hid_irq_out` | report flow & errors (OUT = SET_REPORT) |
+| `hid` | usbhid | `hid_irq_in`, `hid_irq_out` | report flow & errors (OUT = SET_REPORT); **realtime IN report rate (Hz)** per endpoint (kbd/mouse) |
 | `storage` | usb-storage | `usb_stor_blocking_completion` | BOT bulk stalls/timeouts before SCSI reset |
 
 ```bash
 sudo usbtrace uvc --all --vid 0x046d   # every video URB for one camera
 sudo usbtrace uac                       # audio: anomalies only (quiet when healthy)
 sudo usbtrace hid --all                 # HID report flow
+sudo usbtrace hid --vid 0x1c4f          # realtime kbd/mouse Hz (default --rate)
+sudo usbtrace hid --no-rate --all       # raw reports only
 sudo usbtrace storage                   # mass-storage transport errors
 sudo usbtrace --json uvc | jq           # machine-readable
 ```
@@ -24,6 +26,30 @@ sudo usbtrace --json uvc | jq           # machine-readable
 By default only "interesting" URBs (`status != 0` or `error_count > 0`) print, so
 a healthy stream is silent; `--all` prints every completion. Every run ends with
 a health summary (URBs / isoc errors / status errors / bytes).
+
+### HID report rate
+
+`usbtrace hid` defaults to **`--rate`**: every `--interval` seconds (default 1)
+it prints each IN endpoint's report rate (Hz) and interval stats. Keyboard vs
+mouse is guessed from `actual_length` (4 → mouse, 8/9 → kbd) on a composite
+device's separate interrupt endpoints. Use `--no-rate` to turn it off. JSON mode
+emits `hid_rate` / `hid_rate_summary` events.
+
+```bash
+sudo usbtrace hid --interval 5 --vid 0x0ffe --pid 0x0001
+```
+
+Accounting rules, so that one host-side hiccup cannot distort the rate:
+
+| Input | Handling |
+|-------|----------|
+| URB with `status != 0` (e.g. `-ENOENT` from a host-side unlink) | carries no report: excluded from the rate, counted as `err=` |
+| Interval above 50 ms (idle device, suspend/resume, re-bind) | counted as `gaps=`, kept out of avg / min / max |
+| Final window shorter than a quarter of `--interval` | not printed: one report over a few microseconds reads as tens of kHz |
+
+`reports=` is the number of successful reports on that endpoint, and the summary
+Hz is derived from the average interval, so with gaps excluded it reflects the
+steady-state rate.
 
 ## Architecture
 

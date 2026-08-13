@@ -22,7 +22,7 @@ Working modules:
 | **`power`** | autosuspend / autoresume |
 | **`uvc`** | USB Video Class streaming health (isoc errors / frame drops) |
 | **`uac`** | USB Audio Class streaming health (isoc errors / xruns) |
-| **`hid`** | USB HID report flow (in/out, errors) |
+| **`hid`** | USB HID report flow (in/out, errors) + realtime kbd/mouse Hz |
 | **`storage`** | USB Mass Storage (BOT) transport health |
 | **`diag`** | cross-module rule engine: correlates the above into conclusions |
 

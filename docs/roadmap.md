@@ -125,8 +125,9 @@ all feed `diag` via a table-driven source registry. See [class.md](class.md).
       steps tracked in the phased blueprint [uvc.md](uvc.md) (jitter/bandwidth
       signals, negotiated-format awareness, payload validation).
 - [x] `hid` — report flow via kprobe `hid_irq_in`/`hid_irq_out` (in/out, errors;
-      OUT = SET_REPORT). TODO: decode report IDs, flag unexpected SET_REPORT
-      (BadUSB-style).
+      OUT = SET_REPORT), plus a realtime per-endpoint IN report rate with the
+      role guessed from report length. TODO: decode report IDs, flag unexpected
+      SET_REPORT (BadUSB-style).
 - [x] `storage` — Bulk-Only Transport via kprobe `usb_stor_blocking_completion`
       (stall/timeout signals). TODO: CBW/CSW decode, SCSI sense, UAS driver path.
 
