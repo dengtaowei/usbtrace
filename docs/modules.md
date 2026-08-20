@@ -4,10 +4,10 @@
 
 | Module | Status | Hooks | Purpose |
 |--------|--------|-------|---------|
-| `urb`  | working | kprobe `usb_submit_urb`, `usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Foundation for transfer-health diagnosis. |
+| `urb`  | working | kprobe `usb_submit_urb`, `usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Control URBs include the 8-byte setup packet, decoded as `SET_FEATURE` / `CLEAR_FEATURE` / `GET_STATUS` / … (`--ctrl` to keep only ep0). |
 | `enum` | working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
 | `lifecycle` | working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
-| `power` | working | kprobe `usb_autosuspend_device`, `usb_autoresume_device` | Runtime PM: autosuspend/autoresume events. Pair with `urb` to spot suspend-mid-transfer or resume storms. Per-device filter. |
+| `power` | working | kprobe `usb_autosuspend_device`, `usb_autoresume_device`, `usb_port_suspend`, `usb_port_resume` | Runtime PM plus actual port suspend/resume (also used by system sleep). Pair with `urb --ctrl` to see the SET/CLEAR_FEATURE packets. Per-device filter. |
 | `diag`  | working | none (reuses urb/enum/lifecycle/power/class) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
 | `uvc`   | working | kprobe `uvc_video_complete` | USB Video Class: per-URB isoc health **plus frame-level diagnosis** (real FPS, frame drops/corruption, PTS/SCR jitter) by parsing UVC payload headers in BPF. Class-traffic module with added depth; see [class.md](class.md). |
 | `uac`   | working | kprobe `snd_complete_urb` | USB Audio Class streaming health (isoc errors / xruns, capture+playback). See [class.md](class.md). |

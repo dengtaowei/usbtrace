@@ -7,10 +7,13 @@
  *
  *   usb_autosuspend_device(struct usb_device *udev)  -> request runtime suspend
  *   usb_autoresume_device(struct usb_device *udev)   -> request runtime resume
+ *   usb_port_suspend(struct usb_device *udev, ...)   -> actual port suspend
+ *   usb_port_resume(struct usb_device *udev, ...)    -> actual port resume
  *
- * Pairing this with the urb module reveals "device autosuspended mid-transfer"
- * or "resume storms". CO-RE (BPF_CORE_READ) keeps it portable across kernels
- * and arches.
+ * usb_port_* fire for both runtime autosuspend and system sleep (S3). Pair
+ * with `urb --ctrl` to see the SET_FEATURE / CLEAR_FEATURE packets that
+ * usb_port_suspend/resume issue. CO-RE (BPF_CORE_READ) keeps it portable
+ * across kernels and arches.
  */
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -74,4 +77,16 @@ SEC("kprobe/usb_autoresume_device")
 int BPF_KPROBE(on_autoresume, struct usb_device *udev)
 {
 	return emit(udev, POWER_AUTORESUME);
+}
+
+SEC("kprobe/usb_port_suspend")
+int BPF_KPROBE(on_port_suspend, struct usb_device *udev)
+{
+	return emit(udev, POWER_PORT_SUSPEND);
+}
+
+SEC("kprobe/usb_port_resume")
+int BPF_KPROBE(on_port_resume, struct usb_device *udev)
+{
+	return emit(udev, POWER_PORT_RESUME);
 }

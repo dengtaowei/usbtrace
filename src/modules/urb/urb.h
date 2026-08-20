@@ -29,6 +29,11 @@ struct urb_event {
 	__u8 is_submit;	  /* 1 = submit, 0 = complete */
 
 	char comm[USBTRACE_COMM_LEN];
+
+	/* Control URB setup packet (usb_ctrlrequest, 8 bytes, USB little-endian).
+	 * has_setup is 0 for non-control URBs or if urb->setup_packet was NULL. */
+	__u8 has_setup;
+	__u8 setup[8];
 };
 
 /* Config pushed into the BPF program via .rodata before load. */
@@ -36,7 +41,8 @@ struct urb_config {
 	__u16 filter_vid; /* 0 = any */
 	__u16 filter_pid; /* 0 = any */
 	__u8 emit_submit; /* also emit submission records */
-	__u8 _pad[3];
+	__u8 ctrl_only;	  /* only emit CONTROL (ep0) URBs */
+	__u8 _pad[2];
 };
 
 #endif /* __USBTRACE_MOD_URB_H */

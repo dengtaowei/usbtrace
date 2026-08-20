@@ -12,6 +12,8 @@
 enum power_action {
 	POWER_AUTOSUSPEND = 0,
 	POWER_AUTORESUME = 1,
+	POWER_PORT_SUSPEND = 2,	/* usb_port_suspend: runtime + system sleep */
+	POWER_PORT_RESUME = 3,	/* usb_port_resume: selective / system resume */
 };
 
 /* One record per autosuspend/autoresume call. */

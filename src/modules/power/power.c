@@ -23,6 +23,10 @@ static const char *action_str(__u8 a)
 		return "AUTOSUSPEND";
 	case POWER_AUTORESUME:
 		return "AUTORESUME";
+	case POWER_PORT_SUSPEND:
+		return "PORT_SUSPEND";
+	case POWER_PORT_RESUME:
+		return "PORT_RESUME";
 	default:
 		return "?";
 	}
@@ -31,7 +35,10 @@ static const char *action_str(__u8 a)
 static void power_usage(void)
 {
 	fprintf(stderr,
-		"usbtrace power - trace USB autosuspend/autoresume events\n\n"
+		"usbtrace power - trace USB autosuspend/autoresume and port suspend/resume\n\n"
+		"PORT_SUSPEND / PORT_RESUME fire for both runtime PM and system\n"
+		"sleep (S3). Combine with: sudo usbtrace urb --ctrl --submit\n"
+		"to see SET_FEATURE / CLEAR_FEATURE on the wire.\n\n"
 		"Options:\n"
 		"  --vid <hex>     filter by idVendor (e.g. 0x0403)\n"
 		"  --pid <hex>     filter by idProduct\n"
@@ -112,7 +119,7 @@ static int power_run(volatile bool *running)
 
 static struct usbtrace_module power_module = {
 	.name = "power",
-	.summary = "trace USB autosuspend/autoresume events",
+	.summary = "trace USB autosuspend/autoresume and port suspend/resume",
 	.parse_args = power_parse_args,
 	.usage = power_usage,
 	.run = power_run,
