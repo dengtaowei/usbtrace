@@ -64,6 +64,24 @@ static __always_inline int urb_passes_filter(struct urb *urb, __u16 *vid_out,
 				 pid_out);
 }
 
+static __always_inline int urb_is_control(struct urb *urb)
+{
+	return pipe_type(BPF_CORE_READ(urb, pipe)) == USBTRACE_XFER_CONTROL;
+}
+
+static __always_inline void fill_setup(struct urb_event *e, struct urb *urb)
+{
+	unsigned char *setup;
+
+	if (e->xfer_type != USBTRACE_XFER_CONTROL)
+		return;
+	setup = BPF_CORE_READ(urb, setup_packet);
+	if (!setup)
+		return;
+	if (bpf_probe_read_kernel(e->setup, sizeof(e->setup), setup) == 0)
+		e->has_setup = 1;
+}
+
 static __always_inline void fill_common(struct urb_event *e, struct urb *urb,
 					__u16 vid, __u16 pid)
 {
@@ -80,6 +98,7 @@ static __always_inline void fill_common(struct urb_event *e, struct urb *urb,
 	e->length = BPF_CORE_READ(urb, transfer_buffer_length);
 	e->pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	fill_setup(e, urb);
 }
 
 SEC("kprobe/usb_submit_urb")
@@ -90,6 +109,8 @@ int BPF_KPROBE(on_submit, struct urb *urb)
 	__u64 ts = bpf_ktime_get_ns();
 
 	if (!urb)
+		return 0;
+	if (cfg.ctrl_only && !urb_is_control(urb))
 		return 0;
 	if (!urb_passes_filter(urb, &vid, &pid))
 		return 0;
@@ -131,6 +152,10 @@ int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
 
 	if (!urb)
 		return 0;
+	if (cfg.ctrl_only && !urb_is_control(urb)) {
+		bpf_map_delete_elem(&start_ts, &key);
+		return 0;
+	}
 
 	tsp = bpf_map_lookup_elem(&start_ts, &key);
 	/* If we never saw the submit (filtered or pre-existing), and a filter is
