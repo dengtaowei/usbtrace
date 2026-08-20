@@ -464,11 +464,15 @@ static int diag_run(volatile bool *running)
 		uint64_t now;
 
 		err = ring_buffer__poll(rb, 200 /* ms */);
-		if (err == -EINTR) {
-			err = 0;
-			break;
-		}
 		if (err < 0) {
+			/* EINTR: Ctrl-C or system suspend/resume. Keep
+			 * polling unless the signal handler asked us to stop. */
+			if (err == -EINTR || err == -EAGAIN) {
+				ut_dbg("diag: ring buffer poll interrupted: %d",
+				       err);
+				err = 0;
+				continue;
+			}
 			ut_err("diag: ring buffer poll error: %d", err);
 			break;
 		}

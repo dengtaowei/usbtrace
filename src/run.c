@@ -43,11 +43,18 @@ int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 
 	while (*running) {
 		err = ring_buffer__poll(rb, 200 /* ms */);
-		if (err == -EINTR) {
-			err = 0;
-			break;
-		}
 		if (err < 0) {
+			/*
+			 * EINTR is normal: Ctrl-C, and also system suspend /
+			 * resume interrupting epoll_wait. Only stop when the
+			 * signal handler cleared *running. EAGAIN is likewise
+			 * transient around sleep/wake.
+			 */
+			if (err == -EINTR || err == -EAGAIN) {
+				ut_dbg("ring buffer poll interrupted: %d", err);
+				err = 0;
+				continue;
+			}
 			ut_err("ring buffer poll error: %d", err);
 			break;
 		}
