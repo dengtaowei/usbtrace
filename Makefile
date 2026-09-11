@@ -165,6 +165,16 @@ clean:
 deps:
 	$(Q)./scripts/setup-deps.sh
 
+.PHONY: smoke
+# Builds if needed, then load/attach smoke (script escalates via sudo).
+smoke: $(BIN)
+	$(Q)./scripts/smoke-load.sh
+
+.PHONY: smoke-qemu-arm32
+# Optional ARM32/perf guest smoke. Requires USBTRACE_BIN and a kernel — see docs/testing.md.
+smoke-qemu-arm32:
+	$(Q)./scripts/smoke-qemu-arm32.sh
+
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT) $(VMLINUX_DIR):
 	$(Q)mkdir -p $@
 
