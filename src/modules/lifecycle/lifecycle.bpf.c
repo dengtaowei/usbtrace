@@ -4,12 +4,12 @@
  *
  * Traces USB device connect/disconnect at the two USB-core choke points:
  *
- *   usb_new_device(struct usb_device *udev)      -> connect (enumeration done)
- *   usb_disconnect(struct usb_device **pdev)     -> disconnect (teardown start)
+ *   usb_new_device(struct usb_device *udev)      -> connect
+ *   usb_disconnect(struct usb_device **pdev)     -> disconnect
  *
- * Note usb_disconnect() takes a *pointer to* the usb_device pointer, so we
- * deref one level before reading device fields. CO-RE (BPF_CORE_READ) keeps it
- * portable across kernels and arches.
+ * usb_new_device reads descriptors only inside usb_enumerate_device(), so a
+ * plain entry kprobe would often see idVendor/idProduct still 0. Stash the
+ * udev pointer on entry and emit from the kretprobe after a successful return.
  */
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -18,19 +18,28 @@
 
 #include "usbtrace/filter.bpf.h"
 #include "usbtrace/events.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 #include "lifecycle.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
-/* Filled in from user space before load (see lifecycle.c). The `= {}` initializer
- * is required for correct BTF emission of const volatile globals on clang <= 10. */
 const volatile struct lifecycle_config cfg = {};
 
-static __always_inline int emit(void *ctx, struct usb_device *dev, __u8 action)
+/* tid -> usb_device * for usb_new_device entry/exit pairing */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u64);
+	__type(value, __u64);
+} new_dev_pending SEC(".maps");
+
+static __always_inline int emit(struct pt_regs *ctx, struct usb_device *dev,
+				__u8 action)
 {
 	__u16 vid = 0, pid = 0;
 	struct lifecycle_event e = {};
 
+	dev = USBTRACE_KPTR(dev);
 	if (!dev)
 		return 0;
 	if (!usbtrace_dev_match(dev, cfg.filter_vid, cfg.filter_pid, &vid, &pid))
@@ -56,18 +65,45 @@ static __always_inline int emit(void *ctx, struct usb_device *dev, __u8 action)
 }
 
 SEC("kprobe/usb_new_device")
-int BPF_KPROBE(on_new_device, struct usb_device *udev)
+int on_new_device(struct pt_regs *ctx)
 {
+	__u64 id = bpf_get_current_pid_tgid();
+	__u64 udev = USBTRACE_PTR_KEY((void *)USBTRACE_PT_PARM1(ctx));
+
+	if (!udev)
+		return 0;
+	bpf_map_update_elem(&new_dev_pending, &id, &udev, BPF_ANY);
+	return 0;
+}
+
+SEC("kretprobe/usb_new_device")
+int on_new_device_exit(struct pt_regs *ctx)
+{
+	__u64 id = bpf_get_current_pid_tgid();
+	__u64 *pud;
+	struct usb_device *udev;
+	/* ARM32: return value is r0 — same slot as PARM1. */
+	int ret = (int)USBTRACE_PT_PARM1(ctx);
+
+	pud = bpf_map_lookup_elem(&new_dev_pending, &id);
+	if (!pud)
+		return 0;
+	udev = (struct usb_device *)(unsigned long)(__u32)(*pud);
+	bpf_map_delete_elem(&new_dev_pending, &id);
+	if (ret < 0 || !udev)
+		return 0;
 	return emit(ctx, udev, LIFECYCLE_CONNECT);
 }
 
 SEC("kprobe/usb_disconnect")
-int BPF_KPROBE(on_disconnect, struct usb_device **pdev)
+int on_disconnect(struct pt_regs *ctx)
 {
-	struct usb_device *udev = NULL;
+	__u32 r0 = (__u32)USBTRACE_PT_PARM1(ctx);
+	struct usb_device **pdev = (struct usb_device **)(unsigned long)r0;
+	struct usb_device *udev;
 
 	if (!pdev)
 		return 0;
-	bpf_probe_read_kernel(&udev, sizeof(udev), pdev);
+	udev = usbtrace_read_kptr(pdev);
 	return emit(ctx, udev, LIFECYCLE_DISCONNECT);
 }
