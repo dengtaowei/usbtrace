@@ -21,6 +21,14 @@ shellcheck scripts/*.sh                # shell lint
 scripts/check-commits.sh origin/main HEAD   # commit-message lint
 ```
 
+Optional runtime smokes (root + BTF; not in CI yet) are documented in
+[`docs/testing.md`](docs/testing.md):
+
+```bash
+sudo ./scripts/smoke-load.sh           # host load/attach
+# ARM32 QEMU: see docs/testing.md (needs USBTRACE_BIN + kernel)
+```
+
 ## Commit messages: Conventional Commits
 
 Every commit subject MUST follow

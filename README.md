@@ -80,6 +80,7 @@ CMPLT  BULK ep2  >    32/32    st=0      88.0us 0403:6001 1-3 python3
 - `docs/diag.md` — diag rule engine, rule schema, knowledge base
 - `docs/roadmap.md` — future modules & expansion requirements
 - `docs/build.md` — dependencies, native & cross-arch builds
+- `docs/testing.md` — local host / optional ARM32 QEMU smoke tests
 - `CONTRIBUTING.md` — build/test loop, commit convention, PR checks
 - `.cursor/rules/*.mdc` — AI context (project conventions, travels with the repo)
 

@@ -93,3 +93,4 @@ Notes:
 | `failed to find BTF info for global/extern symbol 'cfg'` | upgrade to clang ≥ 12 (preferred); or zero-init the global as `const volatile struct ... cfg = {};` |
 | `failed to load BPF skeleton` | run as root; verify BTF; check `dmesg` for verifier logs (`-v`) |
 | permission denied loading BPF | run with `sudo`; on locked-down systems `kernel.unprivileged_bpf_disabled=2` requires root |
+| `urb` silent on ARM32 under real USB traffic | fixed in `pt_regs.bpf.h`: multi-arg kprobes must not use `BPF_KPROBE(fn, a, b, …)` on 32-bit |

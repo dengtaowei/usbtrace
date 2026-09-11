@@ -22,6 +22,7 @@
 
 #include "usbtrace/filter.bpf.h"
 #include "usbtrace/events.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 #include "power.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -35,6 +36,7 @@ static __always_inline int emit(void *ctx, struct usb_device *dev, __u8 action)
 	__u16 vid = 0, pid = 0;
 	struct power_rec e = {};
 
+	dev = USBTRACE_KPTR(dev);
 	if (!dev)
 		return 0;
 	if (!usbtrace_dev_match(dev, cfg.filter_vid, cfg.filter_pid, &vid, &pid))
@@ -60,25 +62,29 @@ static __always_inline int emit(void *ctx, struct usb_device *dev, __u8 action)
 }
 
 SEC("kprobe/usb_autosuspend_device")
-int BPF_KPROBE(on_autosuspend, struct usb_device *udev)
+int on_autosuspend(struct pt_regs *ctx)
 {
-	return emit(ctx, udev, POWER_AUTOSUSPEND);
+	return emit(ctx, (struct usb_device *)USBTRACE_PT_PARM1(ctx),
+		    POWER_AUTOSUSPEND);
 }
 
 SEC("kprobe/usb_autoresume_device")
-int BPF_KPROBE(on_autoresume, struct usb_device *udev)
+int on_autoresume(struct pt_regs *ctx)
 {
-	return emit(ctx, udev, POWER_AUTORESUME);
+	return emit(ctx, (struct usb_device *)USBTRACE_PT_PARM1(ctx),
+		    POWER_AUTORESUME);
 }
 
 SEC("kprobe/usb_port_suspend")
-int BPF_KPROBE(on_port_suspend, struct usb_device *udev)
+int on_port_suspend(struct pt_regs *ctx)
 {
-	return emit(ctx, udev, POWER_PORT_SUSPEND);
+	return emit(ctx, (struct usb_device *)USBTRACE_PT_PARM1(ctx),
+		    POWER_PORT_SUSPEND);
 }
 
 SEC("kprobe/usb_port_resume")
-int BPF_KPROBE(on_port_resume, struct usb_device *udev)
+int on_port_resume(struct pt_regs *ctx)
 {
-	return emit(ctx, udev, POWER_PORT_RESUME);
+	return emit(ctx, (struct usb_device *)USBTRACE_PT_PARM1(ctx),
+		    POWER_PORT_RESUME);
 }

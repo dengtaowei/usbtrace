@@ -23,6 +23,7 @@
 #include "usbtrace/class.h"
 #include "usbtrace/filter.bpf.h"
 #include "usbtrace/events.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 
 #define USBTRACE_USB_DIR_IN 0x80
 
@@ -40,6 +41,7 @@ usbtrace_class_urb_emit(void *ctx, struct urb *urb, __u16 fvid, __u16 fpid,
 	struct class_urb_event e = {};
 	__u32 pipe;
 
+	urb = USBTRACE_KPTR(urb);
 	if (!urb)
 		return 0;
 	dev = BPF_CORE_READ(urb, dev);

@@ -7,7 +7,8 @@
  * The backend is fixed at build time (config.mk `USBTRACE_EVENTS`):
  *
  *   ringbuf -> one ring_buffer, extra sources via ring_buffer__add()
- *   perf    -> one perf_buffer per source, all under one epoll
+ *   perf    -> one perf_buffer per source; flat epoll over per-CPU perf fds,
+ *              drain via perf_buffer__consume() (never nest epoll-on-epoll)
  *
  * Both back-ends deliver records through the same `ring_buffer_sample_fn`
  * signature, so consumers (and the whole module layer) are transport-agnostic:
