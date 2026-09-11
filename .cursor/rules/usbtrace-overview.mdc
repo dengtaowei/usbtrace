@@ -49,6 +49,10 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
 - Events go through one map named `events` (declared by `usbtrace/events.bpf.h`,
   ringbuf or perf per `config.mk`); emit via `USBTRACE_EVENT_OUTPUT(ctx, &e)`
   and route by `hdr.kind`.
+- On ARM32/i386, do not use `BPF_KPROBE(fn, a, b, …)`: use `usbtrace/pt_regs.bpf.h`
+  (`USBTRACE_PT_PARM*` for args, `USBTRACE_KPTR` / `USBTRACE_PTR_KEY` before
+  CORE_READ or map keys). BPF's 64-bit `long` mis-scales `pt_regs.uregs[]` on
+  32-bit kernels (PARM2+ wrong; PARM1 can also pick up high-half junk).
 - Module `run()` opens its skeleton + sets `.rodata` cfg, then calls
   `usbtrace_run()`; it never hand-rolls the load/attach/poll loop.
 - Tunables: `const volatile struct <name>_config cfg = {};` (`= {}` needed for
