@@ -160,8 +160,12 @@ touches neither:
   `USBTRACE_EVENT_OUTPUT(ctx, &e)`. Modules fill an event on the stack and emit;
   they never name a map type or an output helper.
 - **User side** — `src/evmux.c` implements `usbtrace_evmux` over either
-  `ring_buffer` or one `perf_buffer` per source. `usbtrace_run()` and `diag`
-  both consume through it, so neither contains a transport `#ifdef`.
+  `ring_buffer` or one `perf_buffer` per source. The perf path epolls the
+  per-CPU `perf_event` fds directly and drains with `perf_buffer__consume()`
+  (mmap is authoritative; nesting `perf_buffer__epoll_fd` into another epoll
+  is avoided — that pattern wakes without delivering samples on some 5.4
+  kernels). `usbtrace_run()` and `diag` both consume through it, so neither
+  contains a transport `#ifdef`.
 
 Adding a third transport means editing those two files, not the modules.
 
