@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Shared module run harness. See include/usbtrace/run.h.
+ *
+ * Transport-agnostic: the ringbuf/perf split lives entirely in evmux.c.
  */
 #include <errno.h>
 
 #include "usbtrace/run.h"
+#include "usbtrace/evmux.h"
 #include "usbtrace/log.h"
 #include "usbtrace/probe.h"
 
 int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 {
-	struct ring_buffer *rb = NULL;
+	struct usbtrace_evmux *mux = NULL;
 	int err;
 
 	/* Per-program feature probe: disable hooks whose target is absent on
@@ -32,9 +35,15 @@ int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 		return 1;
 	}
 
-	rb = ring_buffer__new(bpf_map__fd(r->events), r->on_event, r->ctx, NULL);
-	if (!rb) {
-		ut_err("failed to create ring buffer");
+	mux = usbtrace_evmux_new(r->on_event, r->ctx);
+	if (!mux) {
+		ut_err("failed to allocate event consumer");
+		return 1;
+	}
+	err = usbtrace_evmux_add(mux, r->events);
+	if (err) {
+		ut_err("failed to open the events map: %d", err);
+		usbtrace_evmux_free(mux);
 		return 1;
 	}
 
@@ -42,7 +51,7 @@ int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 		r->on_start();
 
 	while (*running) {
-		err = ring_buffer__poll(rb, 200 /* ms */);
+		err = usbtrace_evmux_poll(mux, 200 /* ms */);
 		if (err < 0) {
 			/*
 			 * EINTR is normal: Ctrl-C, and also system suspend /
@@ -51,11 +60,11 @@ int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 			 * transient around sleep/wake.
 			 */
 			if (err == -EINTR || err == -EAGAIN) {
-				ut_dbg("ring buffer poll interrupted: %d", err);
+				ut_dbg("event poll interrupted: %d", err);
 				err = 0;
 				continue;
 			}
-			ut_err("ring buffer poll error: %d", err);
+			ut_err("event poll error: %d", err);
 			break;
 		}
 	}
@@ -65,6 +74,6 @@ int usbtrace_run(const struct usbtrace_run *r, volatile bool *running)
 	if (r->on_stop)
 		r->on_stop();
 
-	ring_buffer__free(rb);
+	usbtrace_evmux_free(mux);
 	return err ? 1 : 0;
 }

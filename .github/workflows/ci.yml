@@ -17,8 +17,20 @@ concurrency:
 
 jobs:
   build:
-    name: build (native x86_64)
+    name: build (x86_64, ${{ matrix.events }}, ${{ matrix.link }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default shipping shape: static, both event transports.
+          - events: ringbuf
+            link: static
+          - events: perf
+            link: static
+          # Keep the shared-library path from rotting.
+          - events: ringbuf
+            link: dynamic
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +48,16 @@ jobs:
           fi
 
       - name: Build
-        run: make
+        run: make USBTRACE_EVENTS=${{ matrix.events }} USBTRACE_LINK=${{ matrix.link }}
+
+      - name: Check link mode
+        run: |
+          file build/usbtrace
+          if [ "${{ matrix.link }}" = static ]; then
+            file build/usbtrace | grep -q 'statically linked'
+          else
+            file build/usbtrace | grep -q 'dynamically linked'
+          fi
 
       - name: Smoke test (module registry)
         run: ./build/usbtrace list
@@ -44,7 +65,7 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: usbtrace-x86_64
+          name: usbtrace-x86_64-${{ matrix.events }}-${{ matrix.link }}
           path: build/usbtrace
           if-no-files-found: error
 

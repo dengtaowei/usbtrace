@@ -3,7 +3,7 @@
  * diag module: nettrace-style USB diagnosis.
  *
  * Unlike a tracing module, diag loads SEVERAL existing BPF skeletons at once
- * (urb/enum/lifecycle/power), merges their ring buffers into one poll loop, and
+ * (urb/enum/lifecycle/power), merges their events maps into one poll loop, and
  * feeds the normalized event stream to a YAML-driven rule engine. The engine
  * correlates events per device and emits conclusions + evidence chains live,
  * with a summary at exit. No new BPF is written; diag reuses the verified
@@ -22,6 +22,7 @@
 #include "usbtrace/log.h"
 #include "usbtrace/cli.h"
 #include "usbtrace/probe.h"
+#include "usbtrace/evmux.h"
 
 #include "diag.h"
 #include "engine.h"
@@ -60,7 +61,7 @@ struct diag_class_src {
 	int (*attach)(void *);
 	void (*destroy)(void *);
 	struct usbtrace_class_config *(*cfg)(void *);
-	int (*events_fd)(void *);
+	struct bpf_map *(*events)(void *);
 	struct bpf_object *(*obj)(void *);
 };
 
@@ -75,9 +76,9 @@ struct diag_class_src {
 		return (struct usbtrace_class_config *)                       \
 			&((struct SK *)s)->rodata->cfg;                       \
 	}                                                                     \
-	static int diag_##SK##_fd(void *s)                                    \
+	static struct bpf_map *diag_##SK##_events(void *s)                    \
 	{                                                                     \
-		return bpf_map__fd(((struct SK *)s)->maps.events);            \
+		return ((struct SK *)s)->maps.events;                         \
 	}                                                                     \
 	static struct bpf_object *diag_##SK##_obj(void *s)                    \
 	{                                                                     \
@@ -92,7 +93,7 @@ DIAG_CLASS_SRC(storage_bpf)
 #define DIAG_CLASS_ROW(SK, NAME)                                               \
 	{                                                                     \
 		NAME, diag_##SK##_open, diag_##SK##_load, diag_##SK##_attach,  \
-		diag_##SK##_destroy, diag_##SK##_cfg, diag_##SK##_fd,         \
+		diag_##SK##_destroy, diag_##SK##_cfg, diag_##SK##_events,     \
 		diag_##SK##_obj                                               \
 	}
 
@@ -206,7 +207,7 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		break;
 	}
 	case USBTRACE_EVT_POWER: {
-		const struct power_event *e = data;
+		const struct power_rec *e = data;
 
 		if (len < sizeof(*e))
 			return -1;
@@ -321,14 +322,6 @@ static int on_event(void *ctx, void *data, size_t len)
 	return 0;
 }
 
-static int add_src(struct ring_buffer **rb, int fd, void *ctx)
-{
-	if (*rb)
-		return ring_buffer__add(*rb, fd, on_event, ctx);
-	*rb = ring_buffer__new(fd, on_event, ctx, NULL);
-	return *rb ? 0 : -1;
-}
-
 /* ---- run ----------------------------------------------------------------- */
 
 static int diag_run(volatile bool *running)
@@ -338,7 +331,7 @@ static int diag_run(volatile bool *running)
 	struct lifecycle_bpf *lc = NULL;
 	struct power_bpf *pw = NULL;
 	void *class_h[DIAG_N_CLASS_SRCS] = { 0 };
-	struct ring_buffer *rb = NULL;
+	struct usbtrace_evmux *mux = NULL;
 	struct diag_engine *eng = NULL;
 	struct diag_rule *rules = NULL;
 	int nrules, nsrc = 0, err = 0, i;
@@ -435,22 +428,28 @@ static int diag_run(volatile bool *running)
 		class_h[i] = h;
 	}
 
-	if (urb && add_src(&rb, bpf_map__fd(urb->maps.events), eng) == 0)
+	mux = usbtrace_evmux_new(on_event, eng);
+	if (!mux) {
+		ut_err("diag: out of memory (evmux)");
+		err = 1;
+		goto cleanup;
+	}
+
+	if (urb && usbtrace_evmux_add(mux, urb->maps.events) == 0)
 		nsrc++;
-	if (en && add_src(&rb, bpf_map__fd(en->maps.events), eng) == 0)
+	if (en && usbtrace_evmux_add(mux, en->maps.events) == 0)
 		nsrc++;
-	if (lc && add_src(&rb, bpf_map__fd(lc->maps.events), eng) == 0)
+	if (lc && usbtrace_evmux_add(mux, lc->maps.events) == 0)
 		nsrc++;
-	if (pw && add_src(&rb, bpf_map__fd(pw->maps.events), eng) == 0)
+	if (pw && usbtrace_evmux_add(mux, pw->maps.events) == 0)
 		nsrc++;
 	for (i = 0; i < DIAG_N_CLASS_SRCS; i++) {
 		if (class_h[i] &&
-		    add_src(&rb, diag_class_srcs[i].events_fd(class_h[i]),
-			    eng) == 0)
+		    usbtrace_evmux_add(mux, diag_class_srcs[i].events(class_h[i])) == 0)
 			nsrc++;
 	}
 
-	if (!rb || nsrc == 0) {
+	if (nsrc == 0) {
 		ut_err("diag: no probes could be attached (need root + BTF?)");
 		err = 1;
 		goto cleanup;
@@ -463,17 +462,17 @@ static int diag_run(volatile bool *running)
 	while (*running) {
 		uint64_t now;
 
-		err = ring_buffer__poll(rb, 200 /* ms */);
+		err = usbtrace_evmux_poll(mux, 200 /* ms */);
 		if (err < 0) {
 			/* EINTR: Ctrl-C or system suspend/resume. Keep
 			 * polling unless the signal handler asked us to stop. */
 			if (err == -EINTR || err == -EAGAIN) {
-				ut_dbg("diag: ring buffer poll interrupted: %d",
+				ut_dbg("diag: event buffer poll interrupted: %d",
 				       err);
 				err = 0;
 				continue;
 			}
-			ut_err("diag: ring buffer poll error: %d", err);
+			ut_err("diag: event buffer poll error: %d", err);
 			break;
 		}
 		now = diag_now_ns();
@@ -488,7 +487,7 @@ static int diag_run(volatile bool *running)
 	diag_engine_report(eng);
 
 cleanup:
-	ring_buffer__free(rb);
+	usbtrace_evmux_free(mux);
 	urb_bpf__destroy(urb);
 	enum_bpf__destroy(en);
 	lifecycle_bpf__destroy(lc);

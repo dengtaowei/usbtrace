@@ -145,7 +145,7 @@ analysis against the existing wire layer:
 
 #### Architecture: extend `uvc`, don't fork a new module
 
-Keep one vertical on one skeleton — same ringbuf, same `diag` registration,
+Keep one vertical on one skeleton — same `events` map, same `diag` registration,
 shared BPF maps for wire↔vb2 correlation:
 
 ```

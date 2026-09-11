@@ -19,6 +19,7 @@
 #include <bpf/bpf_tracing.h>
 
 #include "usbtrace/filter.bpf.h"
+#include "usbtrace/events.bpf.h"
 #include "urb.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -49,11 +50,6 @@ struct {
 	__type(key, __u64);   /* urb pointer */
 	__type(value, __u64); /* submit ts_ns */
 } start_ts SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} events SEC(".maps");
 
 static __always_inline int urb_passes_filter(struct urb *urb, __u16 *vid_out,
 					     __u16 *pid_out)
@@ -107,6 +103,7 @@ int BPF_KPROBE(on_submit, struct urb *urb)
 	__u16 vid = 0, pid = 0;
 	__u64 key = (__u64)urb;
 	__u64 ts = bpf_ktime_get_ns();
+	struct urb_event e = {};
 
 	if (!urb)
 		return 0;
@@ -120,17 +117,12 @@ int BPF_KPROBE(on_submit, struct urb *urb)
 	if (!cfg.emit_submit)
 		return 0;
 
-	struct urb_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-
-	if (!e)
-		return 0;
-	__builtin_memset(e, 0, sizeof(*e));
-	e->hdr.kind = USBTRACE_EVT_URB;
-	e->hdr.size = sizeof(*e);
-	e->hdr.ts_ns = ts;
-	e->is_submit = 1;
-	fill_common(e, urb, vid, pid);
-	bpf_ringbuf_submit(e, 0);
+	e.hdr.kind = USBTRACE_EVT_URB;
+	e.hdr.size = sizeof(e);
+	e.hdr.ts_ns = ts;
+	e.is_submit = 1;
+	fill_common(&e, urb, vid, pid);
+	USBTRACE_EVENT_OUTPUT(ctx, &e);
 	return 0;
 }
 
@@ -149,7 +141,9 @@ int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
 	__u64 key = (__u64)urb;
 	__u64 now = bpf_ktime_get_ns();
 	__u64 *tsp;
+	struct urb_event e = {};
 
+	(void)hcd;
 	if (!urb)
 		return 0;
 	if (cfg.ctrl_only && !urb_is_control(urb)) {
@@ -172,23 +166,15 @@ int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
 		return 0;
 	}
 
-	struct urb_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-
-	if (!e) {
-		if (tsp)
-			bpf_map_delete_elem(&start_ts, &key);
-		return 0;
-	}
-	__builtin_memset(e, 0, sizeof(*e));
-	e->hdr.kind = USBTRACE_EVT_URB;
-	e->hdr.size = sizeof(*e);
-	e->hdr.ts_ns = now;
-	e->is_submit = 0;
-	e->latency_ns = tsp ? (now - *tsp) : 0;
-	e->status = status;
-	e->actual = BPF_CORE_READ(urb, actual_length);
-	fill_common(e, urb, vid, pid);
-	bpf_ringbuf_submit(e, 0);
+	e.hdr.kind = USBTRACE_EVT_URB;
+	e.hdr.size = sizeof(e);
+	e.hdr.ts_ns = now;
+	e.is_submit = 0;
+	e.latency_ns = tsp ? (now - *tsp) : 0;
+	e.status = status;
+	e.actual = BPF_CORE_READ(urb, actual_length);
+	fill_common(&e, urb, vid, pid);
+	USBTRACE_EVENT_OUTPUT(ctx, &e);
 
 	if (tsp)
 		bpf_map_delete_elem(&start_ts, &key);

@@ -66,14 +66,14 @@ main()                         (src/main.c)
         │     ├─ usbtrace_autoload_filter()       disable hooks absent on this kernel
         │     ├─ bpf_object__load_skeleton()     load + CO-RE relocate
         │     ├─ bpf_object__attach_skeleton()   attach the surviving probes
-        │     ├─ ring_buffer__new(events, on_event, ctx)
+        │     ├─ usbtrace_evmux_new/_add(events)  transport-agnostic consumer
         │     ├─ on_start()        (optional: "tracing..." + header)
         │     ├─ poll loop until Ctrl-C / error
         │     └─ on_stop()         (optional: summary)
         └─ <mod>_bpf__destroy()     module owns open/destroy
 ```
 
-The poll loop, attach, ring-buffer setup, error handling and teardown live once
+The poll loop, attach, event-buffer setup, error handling and teardown live once
 in `usbtrace_run()` (`include/usbtrace/run.h`). A module's `run()` only opens its
 skeleton, sets its `.rodata` config, and calls the harness — so every module
 behaves identically and a new one is a few lines.
@@ -123,6 +123,7 @@ To keep modules consistent and small, common behavior is factored out:
 | Piece | File | Provides |
 |-------|------|----------|
 | Run harness | `run.h` / `run.c` | `usbtrace_run()`: feature-probe → load → attach → poll loop → teardown |
+| Event consumer | `evmux.h` / `evmux.c` | merges N `events` maps into one poll loop; the only file that knows the transport |
 | Hook probing | `probe.h` / `probe.c` | `usbtrace_autoload_filter()`: per-program graceful degradation (see below) |
 | CLI helpers | `cli.h` / `usbtrace_cli.c` | `--vid/--pid` parsing (`usbtrace_filter_parse`), `--json`, speed/JSON formatters, libbpf log routing |
 | Class consumer | `class_*.h` / `class_stream.c` | normalized class-traffic record + shared event printer/summary for uvc/uac/hid/storage (see [class.md](class.md)) |
@@ -134,9 +135,34 @@ of `usbtrace_run()`; it still reuses the CLI and class types. See
 
 ## Event transport
 
-All modules push records to a `BPF_MAP_TYPE_RINGBUF`. Every record begins with a
-`struct usbtrace_event_hdr { kind; size; ts_ns; }` (see `common.h`) so a single
-ring buffer can carry heterogeneous records and the user side can route by
-`kind`. The demo `urb` module embeds this header in `struct urb_event`.
+Every module declares one map named `events` and emits into it. Every record
+begins with a `struct usbtrace_event_hdr { kind; size; ts_ns; }` (see
+`common.h`) so one buffer can carry heterogeneous records and the user side can
+route by `kind`. The demo `urb` module embeds this header in `struct urb_event`.
+
+The map type itself is a **build-time** choice (`config.mk`, `USBTRACE_EVENTS`):
+
+| | `ringbuf` (default) | `perf` |
+|---|---|---|
+| Map | `BPF_MAP_TYPE_RINGBUF` | `BPF_MAP_TYPE_PERF_EVENT_ARRAY` |
+| Kernel | ≥ 5.8 | 5.4+ |
+| Ordering | global, no per-CPU loss | per-CPU, can drop under load |
+
+It cannot be a runtime choice: the verifier rejects a program that merely
+*references* `bpf_ringbuf_reserve()` on a kernel without ringbuf, even on a
+branch that never executes. So the selection happens in the preprocessor, and
+one build targets one transport.
+
+Both sides of that choice are contained in exactly two files, and module code
+touches neither:
+
+- **BPF side** — `include/usbtrace/events.bpf.h` declares the `events` map and
+  `USBTRACE_EVENT_OUTPUT(ctx, &e)`. Modules fill an event on the stack and emit;
+  they never name a map type or an output helper.
+- **User side** — `src/evmux.c` implements `usbtrace_evmux` over either
+  `ring_buffer` or one `perf_buffer` per source. `usbtrace_run()` and `diag`
+  both consume through it, so neither contains a transport `#ifdef`.
+
+Adding a third transport means editing those two files, not the modules.
 
 See `docs/modules.md` for how to add a module, and the planned module roadmap.

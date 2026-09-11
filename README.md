@@ -35,6 +35,8 @@ class modules (`uvc/uac/hid/storage`) sit on one shared foundation and all feed
 ```bash
 make deps                 # one-time: toolchain + git submodules
 make                      # build -> build/usbtrace (+ ./usbtrace symlink)
+                          # statically linked; scp the binary to a board as-is
+make USBTRACE_LINK=dynamic  # optional: link against shared libelf/libyaml
 
 sudo ./usbtrace list      # show modules
 sudo ./usbtrace urb       # trace all URBs (Ctrl-C to stop)
@@ -49,6 +51,17 @@ sudo ./usbtrace --json power       # machine-readable JSON Lines (pipe to jq)
 Requires **clang ≥ 12** (≥ 14 recommended), a kernel with BTF
 (`CONFIG_DEBUG_INFO_BTF=y`), and root to load BPF. On older distros install a
 newer clang and build with `make CLANG=clang-12`.
+
+The default build uses the BPF ring buffer (kernel ≥ 5.8). For an older kernel
+(5.4 BSPs and the like) build the perf-event transport instead — same features,
+same commands:
+
+```bash
+make USBTRACE_EVENTS=perf
+```
+
+Build knobs live in `config.mk` (`USBTRACE_EVENTS`, `USBTRACE_LINK`);
+cross-compilation is covered in [docs/build.md](docs/build.md).
 
 ## Example output
 

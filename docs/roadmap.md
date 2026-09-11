@@ -53,7 +53,7 @@ deliver the requirements already promised, then build the differentiator.
       summary at exit. See [diag.md](diag.md). TODO: more rules; deadline-rule
       coverage for hub_port resets; per-rule tunables.
 - [x] **Cross-module correlation / unified timeline.** `diag` loads
-      enum+urb+lifecycle+power together and merges their ring buffers into one
+      enum+urb+lifecycle+power together and merges their events maps into one
       poll loop, normalizing every record (`hdr.kind`-routed) onto a per-device
       (bus-dev-vid-pid) timeline. TODO: expose the merged timeline as a
       standalone view too (not just rule findings).

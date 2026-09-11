@@ -21,6 +21,7 @@
 #include <bpf/bpf_tracing.h>
 
 #include "usbtrace/filter.bpf.h"
+#include "usbtrace/events.bpf.h"
 #include "power.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -29,64 +30,55 @@ char LICENSE[] SEC("license") = "GPL";
  * required for correct BTF emission of const volatile globals on clang <= 10. */
 const volatile struct power_config cfg = {};
 
-struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} events SEC(".maps");
-
-static __always_inline int emit(struct usb_device *dev, __u8 action)
+static __always_inline int emit(void *ctx, struct usb_device *dev, __u8 action)
 {
 	__u16 vid = 0, pid = 0;
+	struct power_rec e = {};
 
 	if (!dev)
 		return 0;
 	if (!usbtrace_dev_match(dev, cfg.filter_vid, cfg.filter_pid, &vid, &pid))
 		return 0;
 
-	struct power_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	e.hdr.kind = USBTRACE_EVT_POWER;
+	e.hdr.size = sizeof(e);
+	e.hdr.ts_ns = bpf_ktime_get_ns();
 
-	if (!e)
-		return 0;
-	__builtin_memset(e, 0, sizeof(*e));
-	e->hdr.kind = USBTRACE_EVT_POWER;
-	e->hdr.size = sizeof(*e);
-	e->hdr.ts_ns = bpf_ktime_get_ns();
+	e.action = action;
+	e.vid = vid;
+	e.product = pid;
+	e.busnum = BPF_CORE_READ(dev, bus, busnum);
+	e.devnum = BPF_CORE_READ(dev, devnum);
+	e.speed = BPF_CORE_READ(dev, speed);
+	e.portnum = BPF_CORE_READ(dev, portnum);
+	BPF_CORE_READ_STR_INTO(&e.devpath, dev, devpath);
+	e.pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
-	e->action = action;
-	e->vid = vid;
-	e->product = pid;
-	e->busnum = BPF_CORE_READ(dev, bus, busnum);
-	e->devnum = BPF_CORE_READ(dev, devnum);
-	e->speed = BPF_CORE_READ(dev, speed);
-	e->portnum = BPF_CORE_READ(dev, portnum);
-	BPF_CORE_READ_STR_INTO(&e->devpath, dev, devpath);
-	e->pid = bpf_get_current_pid_tgid() >> 32;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-
-	bpf_ringbuf_submit(e, 0);
+	USBTRACE_EVENT_OUTPUT(ctx, &e);
 	return 0;
 }
 
 SEC("kprobe/usb_autosuspend_device")
 int BPF_KPROBE(on_autosuspend, struct usb_device *udev)
 {
-	return emit(udev, POWER_AUTOSUSPEND);
+	return emit(ctx, udev, POWER_AUTOSUSPEND);
 }
 
 SEC("kprobe/usb_autoresume_device")
 int BPF_KPROBE(on_autoresume, struct usb_device *udev)
 {
-	return emit(udev, POWER_AUTORESUME);
+	return emit(ctx, udev, POWER_AUTORESUME);
 }
 
 SEC("kprobe/usb_port_suspend")
 int BPF_KPROBE(on_port_suspend, struct usb_device *udev)
 {
-	return emit(udev, POWER_PORT_SUSPEND);
+	return emit(ctx, udev, POWER_PORT_SUSPEND);
 }
 
 SEC("kprobe/usb_port_resume")
 int BPF_KPROBE(on_port_resume, struct usb_device *udev)
 {
-	return emit(udev, POWER_PORT_RESUME);
+	return emit(ctx, udev, POWER_PORT_RESUME);
 }

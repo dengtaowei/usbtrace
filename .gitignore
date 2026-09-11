@@ -2,6 +2,9 @@
 /build/
 /usbtrace
 
+# local cross sysroot staging (e.g. static libyaml for arm)
+/.cross-arm/
+
 # editor / OS
 *.o
 *.bpf.o

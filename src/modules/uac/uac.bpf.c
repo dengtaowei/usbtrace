@@ -18,14 +18,9 @@ char LICENSE[] SEC("license") = "GPL";
 
 const volatile struct usbtrace_class_config cfg = {};
 
-struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} events SEC(".maps");
-
 SEC("kprobe/snd_complete_urb")
 int BPF_KPROBE(on_complete, struct urb *urb)
 {
-	return usbtrace_class_urb_emit(&events, urb, cfg.filter_vid,
+	return usbtrace_class_urb_emit(ctx, urb, cfg.filter_vid,
 				       cfg.filter_pid, USBTRACE_CLASS_AUDIO);
 }
