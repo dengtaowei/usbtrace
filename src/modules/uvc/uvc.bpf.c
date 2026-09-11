@@ -26,6 +26,7 @@
 
 #include "usbtrace/class_urb.bpf.h"
 #include "usbtrace/filter.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 #include "usbtrace/vb2.bpf.h"
 #include "usbtrace/uvc.bpf.h"
 #include "usbtrace/uvc.h"
@@ -621,8 +622,10 @@ static __always_inline void uvc_parse_frames(void *ctx, struct urb *urb)
 }
 
 SEC("kprobe/uvc_video_complete")
-int BPF_KPROBE(on_video_complete, struct urb *urb)
+int on_video_complete(struct pt_regs *ctx)
 {
+	struct urb *urb = USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
+
 	if (!urb)
 		return 0;
 	/* Per-URB transfer health (shared class record). */
@@ -759,9 +762,11 @@ static __always_inline void uvc_drv_emit(void *ctx, __u8 op, __u8 reason,
 
 /* Decode finished a video frame (uvc_video_decode_isoc/bulk path). */
 SEC("kprobe/uvc_queue_next_buffer")
-int BPF_KPROBE(on_queue_next, struct uvc_video_queue *queue,
-	       struct uvc_buffer *buf)
+int on_queue_next(struct pt_regs *ctx)
 {
+	struct uvc_video_queue *queue =
+		USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
+	struct uvc_buffer *buf = USBTRACE_KPTR((void *)USBTRACE_PT_PARM2(ctx));
 	struct uvc_streaming *stream;
 	__u16 vid = 0, pid = 0, bus = 0, devnum = 0;
 	__u64 off, now;
@@ -787,8 +792,10 @@ int BPF_KPROBE(on_queue_next, struct uvc_video_queue *queue,
  * Runs once per URB; only touches the map when a loss is actually seen.
  */
 SEC("kprobe/uvc_video_decode_isoc")
-int BPF_KPROBE(on_decode_isoc, struct uvc_urb *uvc_urb, struct uvc_buffer *buf)
+int on_decode_isoc(struct pt_regs *ctx)
 {
+	struct uvc_urb *uvc_urb = USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
+	struct uvc_buffer *buf = USBTRACE_KPTR((void *)USBTRACE_PT_PARM2(ctx));
 	struct urb *urb;
 	struct uvc_streaming *stream;
 	__u16 vid = 0, pid = 0, bus = 0, devnum = 0;
@@ -831,8 +838,9 @@ int BPF_KPROBE(on_decode_isoc, struct uvc_urb *uvc_urb, struct uvc_buffer *buf)
  * Only runs as kref finalizer — not per async memcpy chunk.
  */
 SEC("kprobe/uvc_queue_buffer_complete")
-int BPF_KPROBE(on_queue_complete, struct kref *ref)
+int on_queue_complete(struct pt_regs *ctx)
 {
+	struct kref *ref = USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
 	struct uvc_buffer *buf;
 	struct uvc_video_queue *queue;
 	struct uvc_streaming *stream;

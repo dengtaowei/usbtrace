@@ -12,6 +12,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "usbtrace/pt_regs.bpf.h"
 #include "usbtrace/class_urb.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -19,8 +20,10 @@ char LICENSE[] SEC("license") = "GPL";
 const volatile struct usbtrace_class_config cfg = {};
 
 SEC("kprobe/usb_stor_blocking_completion")
-int BPF_KPROBE(on_complete, struct urb *urb)
+int on_complete(struct pt_regs *ctx)
 {
+	struct urb *urb = USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
+
 	return usbtrace_class_urb_emit(ctx, urb, cfg.filter_vid,
 				       cfg.filter_pid, USBTRACE_CLASS_STORAGE);
 }

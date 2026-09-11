@@ -19,6 +19,7 @@
 
 #include "usbtrace/filter.bpf.h"
 #include "usbtrace/events.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 #include "enum.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -28,12 +29,15 @@ char LICENSE[] SEC("license") = "GPL";
 const volatile struct enum_config cfg = {};
 
 SEC("kprobe/usb_set_device_state")
-int BPF_KPROBE(on_set_state, struct usb_device *udev,
-	       enum usb_device_state new_state)
+int on_set_state(struct pt_regs *ctx)
 {
+	struct usb_device *udev = (struct usb_device *)USBTRACE_PT_PARM1(ctx);
+	enum usb_device_state new_state =
+		(enum usb_device_state)USBTRACE_PT_PARM2(ctx);
 	__u16 vid = 0, pid = 0;
 	struct enum_event e = {};
 
+	udev = USBTRACE_KPTR(udev);
 	if (!udev)
 		return 0;
 	if (!usbtrace_dev_match(udev, cfg.filter_vid, cfg.filter_pid, &vid, &pid))

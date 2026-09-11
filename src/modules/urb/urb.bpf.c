@@ -20,6 +20,7 @@
 
 #include "usbtrace/filter.bpf.h"
 #include "usbtrace/events.bpf.h"
+#include "usbtrace/pt_regs.bpf.h"
 #include "urb.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -98,15 +99,17 @@ static __always_inline void fill_common(struct urb_event *e, struct urb *urb,
 }
 
 SEC("kprobe/usb_submit_urb")
-int BPF_KPROBE(on_submit, struct urb *urb)
+int on_submit(struct pt_regs *ctx)
 {
+	struct urb *urb = USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
 	__u16 vid = 0, pid = 0;
-	__u64 key = (__u64)urb;
+	__u64 key;
 	__u64 ts = bpf_ktime_get_ns();
 	struct urb_event e = {};
 
 	if (!urb)
 		return 0;
+	key = USBTRACE_PTR_KEY(urb);
 	if (cfg.ctrl_only && !urb_is_control(urb))
 		return 0;
 	if (!urb_passes_filter(urb, &vid, &pid))
@@ -133,12 +136,19 @@ int BPF_KPROBE(on_submit, struct urb *urb)
  * -EINPROGRESS (it is assigned from urb->unlinked only just before calling the
  * completion handler), which is why reading urb->status reported -115 (-EINPROGRESS)
  * for every event.
+ *
+ * Do NOT use BPF_KPROBE(..., hcd, urb, status) here: on ARM32/i386 that macro
+ * mis-scales pt_regs.uregs[] (see pt_regs.bpf.h), so `urb` was garbage and
+ * never matched the submit map key — completions vanished under real traffic.
  */
 SEC("kprobe/usb_hcd_giveback_urb")
-int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
+int on_giveback(struct pt_regs *ctx)
 {
+	struct usb_hcd *hcd = (struct usb_hcd *)USBTRACE_PT_PARM1(ctx);
+	struct urb *urb = USBTRACE_KPTR((void *)USBTRACE_PT_PARM2(ctx));
+	int status = (int)USBTRACE_PT_PARM3(ctx);
 	__u16 vid = 0, pid = 0;
-	__u64 key = (__u64)urb;
+	__u64 key;
 	__u64 now = bpf_ktime_get_ns();
 	__u64 *tsp;
 	struct urb_event e = {};
@@ -146,23 +156,20 @@ int BPF_KPROBE(on_giveback, struct usb_hcd *hcd, struct urb *urb, int status)
 	(void)hcd;
 	if (!urb)
 		return 0;
+	key = USBTRACE_PTR_KEY(urb);
 	if (cfg.ctrl_only && !urb_is_control(urb)) {
 		bpf_map_delete_elem(&start_ts, &key);
 		return 0;
 	}
 
 	tsp = bpf_map_lookup_elem(&start_ts, &key);
-	/* If we never saw the submit (filtered or pre-existing), and a filter is
-	 * active, re-check; otherwise skip to keep output focused. */
-	if (!tsp) {
-		if (cfg.filter_vid || cfg.filter_pid) {
-			if (!urb_passes_filter(urb, &vid, &pid))
-				return 0;
-		} else {
-			return 0;
-		}
-	} else if (!urb_passes_filter(urb, &vid, &pid)) {
-		bpf_map_delete_elem(&start_ts, &key);
+	/*
+	 * Emit every completion that passes the device filter. Missing submit
+	 * timestamps (URB queued before attach) just yield latency_ns = 0.
+	 */
+	if (!urb_passes_filter(urb, &vid, &pid)) {
+		if (tsp)
+			bpf_map_delete_elem(&start_ts, &key);
 		return 0;
 	}
 
