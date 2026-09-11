@@ -16,8 +16,10 @@ enum power_action {
 	POWER_PORT_RESUME = 3,	/* usb_port_resume: selective / system resume */
 };
 
-/* One record per autosuspend/autoresume call. */
-struct power_event {
+/* One record per autosuspend/autoresume call.
+ * Named power_rec (not power_event) to avoid clashing with kernel
+ * enum power_event in older vmlinux.h (e.g. Linux 5.4). */
+struct power_rec {
 	struct usbtrace_event_hdr hdr;
 
 	__u32 pid;	  /* tgid in context (kworker or caller) */

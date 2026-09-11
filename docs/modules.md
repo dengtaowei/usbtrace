@@ -47,10 +47,14 @@ schema and how to extend the knowledge base.
      #include <bpf/bpf_helpers.h>
      #include <bpf/bpf_core_read.h>
      #include <bpf/bpf_tracing.h>
+     #include "usbtrace/events.bpf.h"
      #include "<name>.h"
      char LICENSE[] SEC("license") = "GPL";
      ```
-     Use a `BPF_MAP_TYPE_RINGBUF` named `events`. Use `BPF_CORE_READ()` for all
+     `events.bpf.h` declares the `events` map for you. Fill your event on the
+     stack and hand it to `USBTRACE_EVENT_OUTPUT(ctx, &e)` — never declare the
+     map or call `bpf_ringbuf_*` / `bpf_perf_event_output()` directly, or the
+     module will only build for one transport. Use `BPF_CORE_READ()` for all
      kernel struct field access (portability across arch/kernel).
    - `<name>.c` — user space. Include `"<name>.skel.h"` (auto-generated) and
      `"usbtrace/run.h"`. Do NOT hand-roll the load/attach/poll loop — open the
@@ -108,7 +112,7 @@ For `foo.bpf.c`, the build emits `foo.skel.h` whose generated type is
 Run harness — `#include "usbtrace/run.h"`:
 
 - `usbtrace_run(&(struct usbtrace_run){...}, running)` — the one feature-probe →
-  load → attach → ring buffer → poll loop → teardown for every single-skeleton
+  load → attach → event poll loop → teardown for every single-skeleton
   module. Optional `on_start`/`on_stop` callbacks for a header line / exit
   summary. The module only opens and destroys its skeleton (see "Adding a module"
   above).

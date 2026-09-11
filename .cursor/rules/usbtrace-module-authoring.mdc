@@ -20,11 +20,14 @@ A module = `src/modules/<name>/` with three files. The build auto-discovers
   #include <bpf/bpf_helpers.h>
   #include <bpf/bpf_core_read.h>
   #include <bpf/bpf_tracing.h>
+  #include "usbtrace/events.bpf.h"
   #include "<name>.h"
   char LICENSE[] SEC("license") = "GPL";
   ```
-  Use a `BPF_MAP_TYPE_RINGBUF` named `events`. Read kernel fields ONLY via
-  `BPF_CORE_READ()`. Put user-tunable filters in `const volatile struct ... cfg = {};`
+  The `events` map comes from `events.bpf.h`; emit with
+  `USBTRACE_EVENT_OUTPUT(ctx, &e)` and never declare the map or call
+  `bpf_ringbuf_*` / `bpf_perf_event_output()` yourself (the transport is a
+  build-time choice). Read kernel fields ONLY via `BPF_CORE_READ()`. Put user-tunable filters in `const volatile struct ... cfg = {};`
   (the `= {}` initializer is required for clang ≤10 BTF emission).
 - `<name>.c` — user space. Include `"<name>.skel.h"` + `"usbtrace/run.h"`,
   implement `parse_args`/`usage`/`run`, register via
@@ -40,7 +43,7 @@ A module = `src/modules/<name>/` with three files. The build auto-discovers
 
 Do NOT hand-roll load/attach/poll. The module owns only open + set cfg +
 destroy; `usbtrace_run()` (`include/usbtrace/run.h`) does load → attach →
-ring buffer → poll loop → teardown, so all modules behave identically:
+event poll loop → teardown, so all modules behave identically:
 
 ```c
 static int foo_run(volatile bool *running)

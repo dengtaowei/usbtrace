@@ -26,11 +26,13 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
 - `src/main.c` — CLI: global opts + subcommand dispatch (`list`/`help`/<module>).
 - `src/module.c` + `include/usbtrace/module.h` — module registry (self-register
   via `USBTRACE_MODULE_REGISTER`, constructor-based linked list).
-- `include/usbtrace/common.h` — BPF-safe shared types; every ring-buffer record
+- `include/usbtrace/common.h` — BPF-safe shared types; every event record
   starts with `struct usbtrace_event_hdr { kind; size; ts_ns; }`.
 - `src/run.c` + `include/usbtrace/run.h` — shared `usbtrace_run()` harness
-  (feature-probe→load→attach→ring buffer→poll→teardown); every single-skeleton
-  module uses it.
+  (feature-probe→load→attach→poll→teardown); every single-skeleton module
+  uses it.
+- `src/evmux.c` + `include/usbtrace/evmux.h` — the only user-space code that
+  knows the event transport (ringbuf vs perf, chosen in `config.mk`).
 - `src/probe.c` + `include/usbtrace/probe.h` — `usbtrace_autoload_filter()`:
   per-program graceful degradation (disables hooks whose target is absent on this
   kernel so one missing function doesn't sink the module). Auto-run by the
@@ -44,10 +46,13 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
 ## Conventions
 
 - License: GPL-2.0; every `.bpf.c` needs `char LICENSE[] SEC("license") = "GPL";`.
-- Events go through one `BPF_MAP_TYPE_RINGBUF` named `events`; route by `hdr.kind`.
+- Events go through one map named `events` (declared by `usbtrace/events.bpf.h`,
+  ringbuf or perf per `config.mk`); emit via `USBTRACE_EVENT_OUTPUT(ctx, &e)`
+  and route by `hdr.kind`.
 - Module `run()` opens its skeleton + sets `.rodata` cfg, then calls
   `usbtrace_run()`; it never hand-rolls the load/attach/poll loop.
 - Tunables: `const volatile struct <name>_config cfg = {};` (`= {}` needed for
   clang ≤10 BTF). `libbpf_set_print()` is done once in `main.c`.
 - Run requires root + kernel BTF (`/sys/kernel/btf/vmlinux`).
-- Build: `make deps` once, then `make`. See `usbtrace-build` rule for cross.
+- Build: `make deps` once, then `make` (static by default). `USBTRACE_LINK=dynamic`
+  for shared libraries. See `usbtrace-build` rule for cross.

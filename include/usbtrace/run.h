@@ -5,9 +5,12 @@
  *
  * Each tracing module differs only in (1) its skeleton type, (2) the .rodata
  * config it sets, and (3) how it formats events. Everything else — loading,
- * attaching, building the ring buffer, the poll loop, Ctrl-C / error handling,
- * and teardown of the ring buffer — is identical, so it lives here. A module's
+ * attaching, building the event buffer, the poll loop, Ctrl-C / error handling,
+ * and teardown of the buffer — is identical, so it lives here. A module's
  * run() becomes: open skeleton → set cfg → usbtrace_run() → destroy skeleton.
+ *
+ * Events are consumed through `usbtrace_evmux` (see evmux.h), so the harness
+ * is the same whatever transport the build selected.
  *
  * This is what makes the modules behave consistently and keeps a new module to
  * a few lines. It uses libbpf's generic skeleton ABI (bpf_object__*_skeleton),
@@ -30,7 +33,7 @@ struct usbtrace_run {
 	struct bpf_object_skeleton *skeleton;
 	struct bpf_map *events;
 
-	/* Ring-buffer consumer (ctx is passed through to it). */
+	/* Event consumer (ctx is passed through to it). */
 	ring_buffer_sample_fn on_event;
 	void *ctx;
 

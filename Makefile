@@ -2,14 +2,68 @@
 #
 # usbtrace - eBPF USB subsystem tracer & diagnostic tool.
 #
-# Build (native):      make
+# Build (native):      make                          # static, ringbuf
+#                      make USBTRACE_LINK=dynamic    # shared libelf/libyaml
 # Verbose:             make V=1
+# Event backend:       edit config.mk or: make USBTRACE_EVENTS=perf
 # Cross (arm64):       make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
 #                           VMLINUX_BTF=/path/to/target/vmlinux
 #
 # Supported ARCH values: x86 (x86_64/i686), arm (armv7), arm64 (aarch64).
 
 OUTPUT := build
+
+# Must stay above any real target so `make` defaults to building the binary
+# (EVENTS_STAMP is listed early as a prerequisite helper).
+.DEFAULT_GOAL := all
+
+# ---- Build config (event transport, etc.) ---------------------------------
+-include config.mk
+USBTRACE_EVENTS ?= ringbuf
+
+ifeq ($(USBTRACE_EVENTS),perf)
+EVENTS_CPPFLAGS := -DUSBTRACE_USE_PERF
+# Default lives in src/evmux.c; only override when explicitly configured.
+ifneq ($(USBTRACE_PERF_PAGES),)
+EVENTS_CPPFLAGS += -DUSBTRACE_PERF_PAGES=$(USBTRACE_PERF_PAGES)
+endif
+else ifeq ($(USBTRACE_EVENTS),ringbuf)
+EVENTS_CPPFLAGS :=
+else
+$(error USBTRACE_EVENTS must be 'ringbuf' or 'perf' (got '$(USBTRACE_EVENTS)'))
+endif
+
+# How to link the third-party libraries and libc:
+#   static  - self-contained binary; scp it to a target that has no libelf /
+#             libyaml (the common case for embedded boards)
+#   dynamic - link against the target's shared libraries
+USBTRACE_LINK ?= static
+
+ifeq ($(USBTRACE_LINK),static)
+# -no-pie: gcc --enable-default-pie would otherwise keep a PT_INTERP and
+# the binary still looks dynamically linked.
+LINK_MODE_FLAGS := -static -no-pie
+else ifeq ($(USBTRACE_LINK),dynamic)
+LINK_MODE_FLAGS :=
+else
+$(error USBTRACE_LINK must be 'static' or 'dynamic' (got '$(USBTRACE_LINK)'))
+endif
+
+# Config stamps. Switching a knob renames its stamp; the now-missing file is
+# what makes the affected targets out of date. Keep them out of .SECONDARY (see
+# the bottom of this file) or make will ignore the missing prerequisite.
+EVENTS_STAMP := $(OUTPUT)/.events-$(USBTRACE_EVENTS)
+LINK_STAMP := $(OUTPUT)/.link-$(USBTRACE_LINK)
+
+$(EVENTS_STAMP):
+	$(Q)mkdir -p $(OUTPUT)
+	$(Q)rm -f $(OUTPUT)/.events-*
+	$(Q)touch $@
+
+$(LINK_STAMP):
+	$(Q)mkdir -p $(OUTPUT)
+	$(Q)rm -f $(OUTPUT)/.link-*
+	$(Q)touch $@
 
 # ---- Architecture ---------------------------------------------------------
 # Normalize to the names libbpf / bpf_tracing.h expect.
@@ -22,6 +76,27 @@ CROSS_COMPILE ?=
 
 CLANG ?= clang
 CC := $(CROSS_COMPILE)gcc
+# bpftool bootstrap is always a host tool; never inherit a cross CC=.
+HOSTCC ?= cc
+
+# Cross builds: EXTRA_CFLAGS/LDFLAGS (do not override CFLAGS — that breaks bpftool).
+EXTRA_CFLAGS ?=
+LDFLAGS ?=
+
+# Third-party libraries. Static elfutils pulls in whichever compression
+# backends libelf.a was built against; probe the *target* compiler so a
+# cross sysroot is honoured (`-print-file-name` echoes the name unchanged
+# when it finds nothing). Override USBTRACE_LIBS wholesale if needed.
+have_static_lib = $(if $(filter /%,$(shell $(CC) $(LDFLAGS) \
+	-print-file-name=lib$(1).a 2>/dev/null)),-l$(1))
+
+ifeq ($(origin USBTRACE_LIBS),undefined)
+ifeq ($(USBTRACE_LINK),static)
+USBTRACE_LIBS := -lelf -lz -lyaml $(foreach l,zstd lzma bz2,$(call have_static_lib,$(l)))
+else
+USBTRACE_LIBS := -lelf -lz -lyaml
+endif
+endif
 
 # ---- Vendored toolchain (git submodules) ----------------------------------
 LIBBPF_SRC := $(abspath third_party/libbpf/src)
@@ -50,12 +125,22 @@ VERSION := $(shell git -C . describe --tags --always --dirty 2>/dev/null || echo
 # -Isrc/modules lets cross-module consumers (e.g. diag) include another
 # module's shared header as "<name>/<name>.h".
 INCLUDES := -I$(OUTPUT) -Iinclude -Isrc/modules -I$(LIBBPF_UAPI) -I$(VMLINUX_DIR)
-CFLAGS := -g -O2 -Wall -DUSBTRACE_VERSION='"$(VERSION)"'
+CFLAGS := -g -O2 -Wall -DUSBTRACE_VERSION='"$(VERSION)"' $(EVENTS_CPPFLAGS)
 BIN := $(OUTPUT)/usbtrace
 
 # Clang's system include dirs, needed when compiling with -target bpf.
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
+
+# vmlinux.h from bpftool regularly trips -Wmissing-declarations; silence that
+# (and a few other noisy BPF-target diagnostics) without weakening userspace -Wall.
+BPF_CFLAGS ?= -g -O2 -Wall \
+	-Wno-unused-value -Wno-pointer-sign \
+	-Wno-compare-distinct-pointer-types \
+	-Wno-address-of-packed-member \
+	-Wno-gnu-variable-sized-type-not-at-end \
+	-Wno-missing-declarations \
+	-Wno-unknown-warning-option
 
 ifeq ($(V),1)
 	Q =
@@ -69,7 +154,7 @@ endif
 .PHONY: all
 all: $(BIN)
 	$(Q)ln -sf $(BIN) usbtrace
-	$(call msg,DONE,$(BIN) (arch=$(ARCH)))
+	$(call msg,DONE,$(BIN) (arch=$(ARCH) events=$(USBTRACE_EVENTS) link=$(USBTRACE_LINK)))
 
 .PHONY: clean
 clean:
@@ -87,13 +172,15 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT) $(VMLINUX_DIR):
 $(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
 	$(call msg,LIB,$@)
 	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1 \
+		CC="$(CC)" \
 		OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@) \
 		INCLUDEDIR= LIBDIR= UAPIDIR= install
 
 # ---- bpftool (host bootstrap build) ---------------------------------------
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
-	$(Q)$(MAKE) ARCH= CROSS_COMPILE= OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
+	$(Q)$(MAKE) ARCH= CROSS_COMPILE= CC="$(HOSTCC)" \
+		OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
 
 # ---- vmlinux.h ------------------------------------------------------------
 $(VMLINUX): | $(VMLINUX_DIR) $(BPFTOOL)
@@ -105,15 +192,15 @@ $(VMLINUX): | $(VMLINUX_DIR) $(BPFTOOL)
 	elif [ -r /sys/kernel/btf/vmlinux ]; then \
 		$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@; \
 	else \
-		echo "ERROR: no BTF source. Set VMLINUX_BTF=/path/to/vmlinux or commit bpf/vmlinux/$(ARCH)/vmlinux.h" >&2; \
+		echo "ERROR: no BTF source. Set VMLINUX_BTF=/path/to/target/vmlinux or commit bpf/vmlinux/$(ARCH)/vmlinux.h" >&2; \
 		exit 1; \
 	fi
 
 # ---- BPF objects ----------------------------------------------------------
-$(OUTPUT)/%.bpf.o: src/%.bpf.c $(LIBBPF_OBJ) $(VMLINUX) | $(BPFTOOL)
+$(OUTPUT)/%.bpf.o: src/%.bpf.c $(LIBBPF_OBJ) $(VMLINUX) $(EVENTS_STAMP) | $(BPFTOOL)
 	$(call msg,BPF,$@)
 	$(Q)mkdir -p $(dir $@)
-	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+	$(Q)$(CLANG) $(BPF_CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) $(EVENTS_CPPFLAGS) \
 		-I$(dir $<) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $(@:.bpf.o=.tmp.bpf.o)
 	$(Q)$(BPFTOOL) gen object $@ $(@:.bpf.o=.tmp.bpf.o)
@@ -125,10 +212,10 @@ $(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(BPFTOOL)
 	$(Q)$(BPFTOOL) gen skeleton $< > $@
 
 # ---- user-space objects ---------------------------------------------------
-$(OUTPUT)/%.o: src/%.c $(SKELS) $(LIBBPF_OBJ)
+$(OUTPUT)/%.o: src/%.c $(SKELS) $(LIBBPF_OBJ) $(EVENTS_STAMP)
 	$(call msg,CC,$@)
 	$(Q)mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) $(SKEL_INCLUDES) -I$(dir $<) -c $< -o $@
+	$(Q)$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(INCLUDES) $(SKEL_INCLUDES) -I$(dir $<) -c $< -o $@
 
 # ---- diag: embed default rules.yaml ---------------------------------------
 # Bakes the default knowledge base into the binary (works standalone), while
@@ -144,9 +231,14 @@ $(OUTPUT)/modules/diag/rules.o: $(DIAG_RULES_HDR)
 endif
 
 # ---- final binary ---------------------------------------------------------
-$(BIN): $(USER_OBJS) $(LIBBPF_OBJ)
-	$(call msg,BIN,$@)
-	$(Q)$(CC) $(CFLAGS) $^ -lelf -lz -lyaml -o $@
+$(BIN): $(USER_OBJS) $(LIBBPF_OBJ) $(LINK_STAMP)
+	$(call msg,BIN,$@ ($(USBTRACE_LINK)))
+	$(Q)$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(LDFLAGS) $(LINK_MODE_FLAGS) \
+		$(USER_OBJS) $(LIBBPF_OBJ) $(USBTRACE_LIBS) -o $@
 
 .DELETE_ON_ERROR:
-.SECONDARY:
+# Keep the generated BPF objects/skeletons (they are intermediates of the
+# .bpf.c -> .bpf.o -> .skel.h chain). Scoped on purpose: a bare `.SECONDARY:`
+# marks *every* target intermediate, and make then ignores a missing
+# prerequisite instead of rebuilding — which silently broke the events stamp.
+.SECONDARY: $(BPF_OBJS) $(SKELS)

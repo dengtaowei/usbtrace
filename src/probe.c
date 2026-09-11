@@ -3,6 +3,7 @@
  * Hook feature-probing + per-program graceful degradation. See usbtrace/probe.h.
  */
 #include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -131,12 +132,15 @@ int usbtrace_tracepoint_event_available(const char *event)
 			continue;
 		have_base = 1;
 		while ((de = readdir(d)) != NULL) {
-			char evtpath[384];
+			char evtpath[PATH_MAX];
+			int n;
 
 			if (de->d_name[0] == '.')
 				continue;
-			snprintf(evtpath, sizeof(evtpath), "%s/%s/%s", path,
-				 de->d_name, event);
+			n = snprintf(evtpath, sizeof(evtpath), "%s/%s/%s", path,
+				     de->d_name, event);
+			if (n < 0 || n >= (int)sizeof(evtpath))
+				continue;
 			if (access(evtpath, F_OK) == 0) {
 				closedir(d);
 				return 1;

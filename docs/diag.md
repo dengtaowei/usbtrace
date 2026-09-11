@@ -16,7 +16,7 @@ sudo usbtrace --json diag | jq                  # machine-readable findings
 
 ```
 urb/enum/lifecycle/power + class (uvc/uac/hid/storage) skeletons (reused)
-        │  one ring_buffer poll loop (ring_buffer__add)
+        │  one poll loop over all `events` maps (usbtrace_evmux)
         ▼
 normalized struct diag_event  (routed by hdr.kind)
         ▼

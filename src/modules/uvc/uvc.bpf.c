@@ -43,11 +43,6 @@ const volatile struct uvc_config cfg = {};
 #define UVC_SCR 0x08
 #define UVC_ERR 0x40
 
-struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} events SEC(".maps");
-
 /* Per-stream (bus,dev,ep) frame-assembly state. */
 struct uvc_stream_state {
 	__u64 frame_start_ts;
@@ -268,13 +263,13 @@ static __always_inline void uvc_vb2_bind_dev(struct vb2_queue *q,
 	bpf_map_update_elem(&vb2_dev_queue, &dkey, &qkey, BPF_ANY);
 }
 
-static __always_inline void uvc_vb2_submit(struct vb2_queue *q,
+static __always_inline void uvc_vb2_submit(void *ctx, struct vb2_queue *q,
 					 struct vb2_buffer *b, __u8 op,
 					 __u8 state, __u8 starved, __u64 now,
 					 __u32 seq, __u8 seq_gap,
 					 __u32 interval, __u32 wire_to_vb2_ns)
 {
-	struct uvc_vb2_event *ve;
+	struct uvc_vb2_event ve = {};
 	__u16 nb = 0, qu = 0, drv = 0;
 	__u32 bytesused = 0;
 
@@ -283,36 +278,32 @@ static __always_inline void uvc_vb2_submit(struct vb2_queue *q,
 	if (b)
 		bytesused = BPF_CORE_READ(b, planes[0].bytesused);
 
-	ve = bpf_ringbuf_reserve(&events, sizeof(*ve), 0);
-	if (!ve)
-		return;
-	__builtin_memset(ve, 0, sizeof(*ve));
-	ve->hdr.kind = USBTRACE_EVT_UVC_VB2;
-	ve->hdr.size = sizeof(*ve);
-	ve->hdr.ts_ns = now;
-	ve->vb2_op = op;
-	ve->starved = starved;
-	ve->num_buffers = nb;
-	ve->queued = qu;
-	ve->drv_owned = drv;
-	ve->sequence = seq;
-	ve->seq_gap = seq_gap;
-	ve->interval_ns = interval;
-	ve->wire_to_vb2_ns = wire_to_vb2_ns;
-	ve->state = state;
+	ve.hdr.kind = USBTRACE_EVT_UVC_VB2;
+	ve.hdr.size = sizeof(ve);
+	ve.hdr.ts_ns = now;
+	ve.vb2_op = op;
+	ve.starved = starved;
+	ve.num_buffers = nb;
+	ve.queued = qu;
+	ve.drv_owned = drv;
+	ve.sequence = seq;
+	ve.seq_gap = seq_gap;
+	ve.interval_ns = interval;
+	ve.wire_to_vb2_ns = wire_to_vb2_ns;
+	ve.state = state;
 	if (b) {
-		ve->bytesused = bytesused;
-		ve->vb2_timestamp = BPF_CORE_READ(b, timestamp);
-		ve->buf_index = (__u8)BPF_CORE_READ(b, index);
+		ve.bytesused = bytesused;
+		ve.vb2_timestamp = BPF_CORE_READ(b, timestamp);
+		ve.buf_index = (__u8)BPF_CORE_READ(b, index);
 	}
-	uvc_vb2_fill_device(ve, now);
-	if (ve->busnum || ve->devnum)
-		uvc_vb2_bind_dev(q, ve->busnum, ve->devnum);
-	bpf_get_current_comm(&ve->comm, sizeof(ve->comm));
-	bpf_ringbuf_submit(ve, 0);
+	uvc_vb2_fill_device(&ve, now);
+	if (ve.busnum || ve.devnum)
+		uvc_vb2_bind_dev(q, ve.busnum, ve.devnum);
+	bpf_get_current_comm(&ve.comm, sizeof(ve.comm));
+	USBTRACE_EVENT_OUTPUT(ctx, &ve);
 }
 
-static __always_inline void uvc_check_starvation(__u16 bus, __u16 dev,
+static __always_inline void uvc_check_starvation(void *ctx, __u16 bus, __u16 dev,
 						 __u64 now)
 {
 	__u32 dkey = ((__u32)bus << 16) | dev;
@@ -340,10 +331,11 @@ static __always_inline void uvc_check_starvation(__u16 bus, __u16 dev,
 	    now - st->last_starve_ns < VB2_STARVE_COOLDOWN_NS)
 		return;
 	st->last_starve_ns = now;
-	uvc_vb2_submit(q, NULL, UVC_VB2_STARVED, 0, 1, now, 0, 0, 0, 0);
+	uvc_vb2_submit(ctx, q, NULL, UVC_VB2_STARVED, 0, 1, now, 0, 0, 0, 0);
 }
 
-static __always_inline void uvc_emit_vb2_done(struct vb2_buffer *b, __u8 state)
+static __always_inline void uvc_emit_vb2_done(void *ctx, struct vb2_buffer *b,
+					       __u8 state)
 {
 	struct vb2_qstate *st;
 	struct vb2_queue *q;
@@ -382,11 +374,11 @@ static __always_inline void uvc_emit_vb2_done(struct vb2_buffer *b, __u8 state)
 		interval = (__u32)(now - st->last_done_ns);
 	st->last_done_ns = now;
 	wire_to_vb2_ns = uvc_wire_to_vb2_ns(now, bytesused);
-	uvc_vb2_submit(q, b, UVC_VB2_DONE, state, 0, now, seq, seq_gap,
+	uvc_vb2_submit(ctx, q, b, UVC_VB2_DONE, state, 0, now, seq, seq_gap,
 			interval, wire_to_vb2_ns);
 }
 
-static __always_inline void uvc_emit_vb2_xact(struct vb2_queue *q,
+static __always_inline void uvc_emit_vb2_xact(void *ctx, struct vb2_queue *q,
 					      struct vb2_buffer *b, __u8 op,
 					      __u8 state)
 {
@@ -394,7 +386,7 @@ static __always_inline void uvc_emit_vb2_xact(struct vb2_queue *q,
 
 	if (!q || !b || !vb2_is_capture(b))
 		return;
-	uvc_vb2_submit(q, b, op, state, 0, now, 0, 0, 0, 0);
+	uvc_vb2_submit(ctx, q, b, op, state, 0, now, 0, 0, 0, 0);
 }
 
 /*
@@ -409,7 +401,7 @@ static __always_inline int uvc_vb2_raw_done(struct bpf_raw_tracepoint_args *ctx)
 	b = (struct vb2_buffer *)ctx->args[1];
 	if (!b)
 		return 0;
-	uvc_emit_vb2_done(b, VB2_BUF_STATE_DONE);
+	uvc_emit_vb2_done(ctx, b, VB2_BUF_STATE_DONE);
 	return 0;
 }
 
@@ -425,7 +417,7 @@ static __always_inline int uvc_vb2_raw_qvb(struct bpf_raw_tracepoint_args *ctx,
 	b = (struct vb2_buffer *)ctx->args[1];
 	if (!q || !b)
 		return 0;
-	uvc_emit_vb2_xact(q, b, op, state);
+	uvc_emit_vb2_xact(ctx, q, b, op, state);
 	return 0;
 }
 
@@ -459,50 +451,50 @@ int raw_vb2_dqbuf(struct bpf_raw_tracepoint_args *ctx)
 	return uvc_vb2_raw_qvb(ctx, UVC_VB2_DQBUF, VB2_BUF_STATE_DEQUEUED);
 }
 
-static __always_inline __u32 le32(const __u8 *p)
+static __always_inline __u32 uvc_load_le32(const __u8 *p)
 {
 	return (__u32)p[0] | ((__u32)p[1] << 8) | ((__u32)p[2] << 16) |
 	       ((__u32)p[3] << 24);
 }
-static __always_inline __u16 le16(const __u8 *p)
+static __always_inline __u16 uvc_load_le16(const __u8 *p)
 {
 	return (__u16)p[0] | ((__u16)p[1] << 8);
 }
 
 static __always_inline void
-uvc_emit_frame(struct uvc_stream_state *st, __u8 eof, __u16 vid, __u16 pid,
-	       __u16 bus, __u16 dev, __u8 ep, __u64 now)
+uvc_emit_frame(void *ctx, struct uvc_stream_state *st, __u8 eof, __u16 vid,
+	       __u16 pid, __u16 bus, __u16 dev, __u8 ep, __u64 now)
 {
-	struct uvc_frame_event *fe;
+	/* Keep fe in an inner scope so it is off the BPF stack before
+	 * uvc_check_starvation() may emit a vb2 event. */
+	{
+		struct uvc_frame_event fe = {};
 
-	fe = bpf_ringbuf_reserve(&events, sizeof(*fe), 0);
-	if (fe) {
-		__builtin_memset(fe, 0, sizeof(*fe));
-		fe->hdr.kind = USBTRACE_EVT_UVC_FRAME;
-		fe->hdr.size = sizeof(*fe);
-		fe->hdr.ts_ns = now;
-		fe->bytes = st->cur_bytes;
-		fe->packets = st->cur_packets;
-		fe->err_packets = st->cur_err_packets;
-		fe->duration_ns = (__u32)(now - st->frame_start_ts);
-		fe->interval_ns = st->last_frame_end_ts ?
+		fe.hdr.kind = USBTRACE_EVT_UVC_FRAME;
+		fe.hdr.size = sizeof(fe);
+		fe.hdr.ts_ns = now;
+		fe.bytes = st->cur_bytes;
+		fe.packets = st->cur_packets;
+		fe.err_packets = st->cur_err_packets;
+		fe.duration_ns = (__u32)(now - st->frame_start_ts);
+		fe.interval_ns = st->last_frame_end_ts ?
 			(__u32)(now - st->last_frame_end_ts) : 0;
-		fe->pts = st->cur_pts;
-		fe->scr_stc = st->cur_scr_stc;
-		fe->scr_sof = st->cur_scr_sof;
-		fe->errored = (!eof || st->saw_err) ? 1 : 0;
-		fe->eof = eof;
-		fe->fid = st->cur_fid;
-		fe->vid = vid;
-		fe->product = pid;
-		fe->busnum = bus;
-		fe->devnum = dev;
-		fe->ep = ep;
-		bpf_get_current_comm(&fe->comm, sizeof(fe->comm));
-		bpf_ringbuf_submit(fe, 0);
-		uvc_note_wire_frame(bus, dev, vid, pid, st->cur_bytes, now);
-		uvc_check_starvation(bus, dev, now);
+		fe.pts = st->cur_pts;
+		fe.scr_stc = st->cur_scr_stc;
+		fe.scr_sof = st->cur_scr_sof;
+		fe.errored = (!eof || st->saw_err) ? 1 : 0;
+		fe.eof = eof;
+		fe.fid = st->cur_fid;
+		fe.vid = vid;
+		fe.product = pid;
+		fe.busnum = bus;
+		fe.devnum = dev;
+		fe.ep = ep;
+		bpf_get_current_comm(&fe.comm, sizeof(fe.comm));
+		USBTRACE_EVENT_OUTPUT(ctx, &fe);
 	}
+	uvc_note_wire_frame(bus, dev, vid, pid, st->cur_bytes, now);
+	uvc_check_starvation(ctx, bus, dev, now);
 
 	/* reset for the next frame; keep last_frame_end_ts for interval */
 	st->last_frame_end_ts = now;
@@ -516,7 +508,7 @@ uvc_emit_frame(struct uvc_stream_state *st, __u8 eof, __u16 vid, __u16 pid,
 	st->active = 0;
 }
 
-static __always_inline void uvc_parse_frames(struct urb *urb)
+static __always_inline void uvc_parse_frames(void *ctx, struct urb *urb)
 {
 	struct uvc_stream_state init = {};
 	struct uvc_stream_state *st;
@@ -603,7 +595,7 @@ static __always_inline void uvc_parse_frames(struct urb *urb)
 		} else if (st->have_fid && fid != st->cur_fid) {
 			/* FID toggled without a prior EOF: previous frame lost
 			 * its end -> emit it as errored, then start fresh. */
-			uvc_emit_frame(st, 0, vid, pid, bus, devnum, ep, now);
+			uvc_emit_frame(ctx, st, 0, vid, pid, bus, devnum, ep, now);
 			st->active = 1;
 			st->have_fid = 1;
 			st->cur_fid = fid;
@@ -617,14 +609,14 @@ static __always_inline void uvc_parse_frames(struct urb *urb)
 			st->saw_err = 1;
 
 		if ((bfh & UVC_PTS) && hlen >= 6)
-			st->cur_pts = le32(&hdr[2]);
+			st->cur_pts = uvc_load_le32(&hdr[2]);
 		if ((bfh & UVC_PTS) && (bfh & UVC_SCR) && hlen >= 12) {
-			st->cur_scr_stc = le32(&hdr[6]);
-			st->cur_scr_sof = le16(&hdr[10]);
+			st->cur_scr_stc = uvc_load_le32(&hdr[6]);
+			st->cur_scr_sof = uvc_load_le16(&hdr[10]);
 		}
 
 		if (bfh & UVC_EOF)
-			uvc_emit_frame(st, 1, vid, pid, bus, devnum, ep, now);
+			uvc_emit_frame(ctx, st, 1, vid, pid, bus, devnum, ep, now);
 	}
 }
 
@@ -634,11 +626,11 @@ int BPF_KPROBE(on_video_complete, struct urb *urb)
 	if (!urb)
 		return 0;
 	/* Per-URB transfer health (shared class record). */
-	usbtrace_class_urb_emit(&events, urb, cfg.filter_vid, cfg.filter_pid,
+	usbtrace_class_urb_emit(ctx, urb, cfg.filter_vid, cfg.filter_pid,
 				USBTRACE_CLASS_VIDEO);
 	/* Per-frame reconstruction (uvc-specific). */
 	if (!cfg.no_frames)
-		uvc_parse_frames(urb);
+		uvc_parse_frames(ctx, urb);
 	return 0;
 }
 
@@ -747,26 +739,22 @@ static __always_inline __u8 uvc_drop_cause_take(struct uvc_buffer *buf)
 	return val;
 }
 
-static __always_inline void uvc_drv_emit(__u8 op, __u8 reason, __u16 vid,
-					 __u16 pid, __u16 bus, __u16 devnum,
-					 __u64 now)
+static __always_inline void uvc_drv_emit(void *ctx, __u8 op, __u8 reason,
+					 __u16 vid, __u16 pid, __u16 bus,
+					 __u16 devnum, __u64 now)
 {
-	struct uvc_drv_event *de;
+	struct uvc_drv_event de = {};
 
-	de = bpf_ringbuf_reserve(&events, sizeof(*de), 0);
-	if (!de)
-		return;
-	__builtin_memset(de, 0, sizeof(*de));
-	de->hdr.kind = USBTRACE_EVT_UVC_DRV;
-	de->hdr.size = sizeof(*de);
-	de->hdr.ts_ns = now;
-	de->drv_op = op;
-	de->reason = reason;
-	de->vid = vid;
-	de->product = pid;
-	de->busnum = bus;
-	de->devnum = devnum;
-	bpf_ringbuf_submit(de, 0);
+	de.hdr.kind = USBTRACE_EVT_UVC_DRV;
+	de.hdr.size = sizeof(de);
+	de.hdr.ts_ns = now;
+	de.drv_op = op;
+	de.reason = reason;
+	de.vid = vid;
+	de.product = pid;
+	de.busnum = bus;
+	de.devnum = devnum;
+	USBTRACE_EVENT_OUTPUT(ctx, &de);
 }
 
 /* Decode finished a video frame (uvc_video_decode_isoc/bulk path). */
@@ -789,7 +777,7 @@ int BPF_KPROBE(on_queue_next, struct uvc_video_queue *queue,
 		return 0;
 
 	now = bpf_ktime_get_ns();
-	uvc_drv_emit(UVC_DRV_RECV, 0, vid, pid, bus, devnum, now);
+	uvc_drv_emit(ctx, UVC_DRV_RECV, 0, vid, pid, bus, devnum, now);
 	return 0;
 }
 
@@ -898,6 +886,6 @@ int BPF_KPROBE(on_queue_complete, struct kref *ref)
 		reason = UVC_DROP_OTHER;	/* header err bit / overflow / lost EOF */
 
 	now = bpf_ktime_get_ns();
-	uvc_drv_emit(UVC_DRV_DROP, reason, vid, pid, bus, devnum, now);
+	uvc_drv_emit(ctx, UVC_DRV_DROP, reason, vid, pid, bus, devnum, now);
 	return 0;
 }

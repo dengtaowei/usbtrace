@@ -58,7 +58,7 @@ steady-state rate.
         │  usbtrace_class_urb_emit() reads CORE types only (urb, urb->dev)
         ▼
 struct class_urb_event { klass; status; error_count; packets; bytes; ... }
-        │  one ringbuf per module, hdr.kind = USBTRACE_EVT_CLASS
+        │  one `events` map per module, hdr.kind = USBTRACE_EVT_CLASS
         ▼
 shared user consumer (class_stream.*)  → text/JSON + exit summary   (standalone)
         └────────────────────────────→ diag normalizes + correlates (cooperation)
@@ -69,13 +69,15 @@ Shared pieces (write once, reused by every class module):
 | File | Role |
 |------|------|
 | `include/usbtrace/class.h` | normalized `struct class_urb_event`, `enum usbtrace_class`, shared `usbtrace_class_config` |
-| `include/usbtrace/class_urb.bpf.h` | `usbtrace_class_urb_emit()` — reserve/fill/submit from a `struct urb *` |
+| `include/usbtrace/class_urb.bpf.h` | `usbtrace_class_urb_emit()` — fill/emit from a `struct urb *` |
+| `include/usbtrace/events.bpf.h` | the `events` map + `USBTRACE_EVENT_OUTPUT()` (see [build.md](build.md) for the transport switch) |
 | `include/usbtrace/class_stream.h` + `src/class_stream.c` | arg parsing, event print (text/JSON), health tally, summary |
 | `include/usbtrace/run.h` | `usbtrace_run()` — the load/attach/poll harness shared with the core modules |
 
-A module's own code is just a `.bpf.c` (declare ringbuf + cfg, one kprobe per
-hook calling the helper) and a small `.c` (open skeleton, set filter, call
-`usbtrace_run()` with `class_stream_on_event` + a summary callback).
+A module's own code is just a `.bpf.c` (declare cfg, one kprobe per hook calling
+the helper — the `events` map comes from the shared header) and a small `.c`
+(open skeleton, set filter, call `usbtrace_run()` with `class_stream_on_event`
++ a summary callback).
 
 ## vmlinux BTF vs module BTF (portability tiers)
 
@@ -121,11 +123,12 @@ Example: a hypothetical `printer` (usblp) module.
    #include "usbtrace/class_urb.bpf.h"
    char LICENSE[] SEC("license") = "GPL";
    const volatile struct usbtrace_class_config cfg = {};
-   struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 256*1024); } events SEC(".maps");
    SEC("kprobe/usblp_bulk_read")            // a urb-completion in usblp
    int BPF_KPROBE(on_complete, struct urb *urb)
-   { return usbtrace_class_urb_emit(&events, urb, cfg.filter_vid, cfg.filter_pid, USBTRACE_CLASS_PRINTER); }
+   { return usbtrace_class_urb_emit(ctx, urb, cfg.filter_vid, cfg.filter_pid, USBTRACE_CLASS_PRINTER); }
    ```
+   `class_urb.bpf.h` already declares the `events` map; pass the program `ctx`
+   so the emit works on both event transports.
 2. Add `USBTRACE_CLASS_PRINTER` to `enum usbtrace_class` (class.h) and a name in
    `usbtrace_class_str()` (class_stream.c).
 3. **`src/modules/printer/printer.c`** — copy `uvc.c`, swap the skeleton type
@@ -148,7 +151,7 @@ code**. Just register the source:
 2. (Optional) add rules to `rules.yaml` using `kind: class, class: printer`.
 
 That's it — the table-driven loader brings it up with graceful degradation, sets
-the filter, and merges its ringbuf into the poll loop.
+the filter, and merges its `events` map into the poll loop.
 
 ## uvc: frame-level diagnosis (a class module that adds depth)
 
@@ -163,7 +166,7 @@ rate, how many frames actually dropped, how much PTS/SCR jitter?*
 
 ```
 uvc_video_complete(urb)
-   ├─ usbtrace_class_urb_emit()      → class_urb_event   (kind=CLASS, shared health)
+   ├─ usbtrace_class_urb_emit(ctx, …) → class_urb_event  (kind=CLASS, shared health)
    └─ uvc_parse_frames(urb)          → walks the isoc packet descriptors,
         parses the UVC payload header in each packet (FID/EOF/ERR/PTS/SCR),
         assembles frames in a per-stream BPF hash map, and on each End-of-Frame

@@ -59,7 +59,7 @@ static int handle_event(void *ctx, void *data, size_t len)
 	if (len < sizeof(struct usbtrace_event_hdr))
 		return 0;
 
-	const struct power_event *e = data;
+	const struct power_rec *e = data;
 
 	if (e->hdr.kind != USBTRACE_EVT_POWER || len < sizeof(*e))
 		return 0;
