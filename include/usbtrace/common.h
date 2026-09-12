@@ -31,6 +31,7 @@ enum usbtrace_event_kind {
 				    * uvc emits this alongside its EVT_CLASS records. */
 	USBTRACE_EVT_UVC_VB2 = 7, /* vb2 buffer done (stage 3); see uvc.h */
 	USBTRACE_EVT_UVC_DRV = 8, /* uvcvideo driver recv/drop; see uvc.h */
+	USBTRACE_EVT_HUB = 9,	  /* hub port reset/disable/power/overcurrent */
 };
 
 /* Common envelope at the head of every event pushed to the ring buffer.

@@ -3,7 +3,7 @@
  * diag module: normalized cross-module event view.
  *
  * The diag rule engine consumes events from several tracing modules
- * (urb/enum/lifecycle/power) at once. Each module has its own record layout,
+ * (urb/enum/lifecycle/power/hub) at once. Each module has its own record layout,
  * so diag flattens them into a single kind-agnostic struct diag_event that the
  * engine and the YAML rules reference by field name. This decouples the rule
  * DSL from the raw per-module struct layouts.
@@ -64,8 +64,13 @@ struct diag_event {
 	uint8_t old_state;
 	uint8_t new_state;
 
-	/* power/lifecycle action */
+	/* power/lifecycle/hub action */
 	uint8_t action;
+	uint8_t reset_resume;	/* lifecycle RESET during reset_resume */
+	uint8_t step;		/* enum enum_step (kind == ENUM) */
+	uint8_t has_setup;
+	uint8_t brequest;	/* urb setup bRequest when has_setup */
+	uint16_t wvalue;	/* urb setup wValue */
 
 	char comm[USBTRACE_COMM_LEN];
 	char devpath[16];

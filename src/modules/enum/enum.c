@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * enum module user-space side: configure, load & attach the BPF program, then
- * consume enumeration state-transition events and print them as a timeline.
+ * consume enumeration state-transition and ep0-milestone events and print
+ * them as a timeline.
  */
 #include <stdio.h>
 
@@ -32,10 +33,20 @@ static const char *state_str(__u8 s)
 	}
 }
 
+static const char *step_str(__u8 s)
+{
+	switch (s) {
+	case ENUM_STEP_GET_DESC:	return "GET_DESCRIPTOR";
+	case ENUM_STEP_SET_ADDR:	return "SET_ADDRESS";
+	case ENUM_STEP_SET_CONFIG:	return "SET_CONFIGURATION";
+	default:			return "STATE";
+	}
+}
+
 static void enum_usage(void)
 {
 	fprintf(stderr,
-		"usbtrace enum - trace USB enumeration state timeline\n\n"
+		"usbtrace enum - trace USB enumeration state timeline and ep0 milestones\n\n"
 		"Options:\n"
 		"  --vid <hex>     filter by idVendor (e.g. 0x0403)\n"
 		"  --pid <hex>     filter by idProduct\n"
@@ -65,18 +76,26 @@ static int handle_event(void *ctx, void *data, size_t len)
 		char comm[2 * USBTRACE_COMM_LEN + 1];
 		char path[2 * sizeof(e->devpath) + 1];
 
-		printf("{\"event\":\"enum\",\"from\":\"%s\",\"to\":\"%s\","
+		printf("{\"event\":\"enum\",\"step\":\"%s\",\"from\":\"%s\","
+		       "\"to\":\"%s\",\"status\":%d,"
 		       "\"speed\":\"%s\",\"vid\":\"0x%04x\",\"pid\":\"0x%04x\","
 		       "\"bus\":%u,\"dev\":%u,\"port\":%u,\"path\":\"%s\","
 		       "\"comm\":\"%s\"}\n",
-		       state_str(e->old_state), state_str(e->new_state),
+		       step_str(e->step), state_str(e->old_state),
+		       state_str(e->new_state), e->status,
 		       usbtrace_speed_str(e->speed), e->vid, e->product,
 		       e->busnum, e->devnum, e->portnum,
 		       usbtrace_json_escape(e->devpath, path, sizeof(path)),
 		       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
-	} else {
+	} else if (e->step == ENUM_STEP_STATE) {
 		printf("%-12s -> %-12s %-6s %04x:%04x %u-%u port%u path=%s %s\n",
 		       state_str(e->old_state), state_str(e->new_state),
+		       usbtrace_speed_str(e->speed), e->vid, e->product,
+		       e->busnum, e->devnum, e->portnum,
+		       e->devpath[0] ? e->devpath : "-", e->comm);
+	} else {
+		printf("%-16s st=%-4d %-6s %04x:%04x %u-%u port%u path=%s %s\n",
+		       step_str(e->step), e->status,
 		       usbtrace_speed_str(e->speed), e->vid, e->product,
 		       e->busnum, e->devnum, e->portnum,
 		       e->devpath[0] ? e->devpath : "-", e->comm);
@@ -118,7 +137,7 @@ static int enum_run(volatile bool *running)
 
 static struct usbtrace_module enum_module = {
 	.name = "enum",
-	.summary = "trace USB enumeration state timeline (connect->configured)",
+	.summary = "trace USB enumeration state timeline and ep0 milestones",
 	.parse_args = enum_parse_args,
 	.usage = enum_usage,
 	.run = enum_run,

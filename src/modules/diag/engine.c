@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 
 #include "usbtrace/cli.h"
@@ -80,6 +81,17 @@ static const char *vb2_op_label(uint8_t op)
 	}
 }
 
+static const char *power_action_str(uint8_t a)
+{
+	switch (a) {
+	case 0:  return "autosuspend";
+	case 1:  return "autoresume";
+	case 2:  return "port_suspend";
+	case 3:  return "port_resume";
+	default: return "?";
+	}
+}
+
 static const char *kind_str(uint32_t k)
 {
 	switch (k) {
@@ -90,6 +102,7 @@ static const char *kind_str(uint32_t k)
 	case 5: return "class";
 	case 6: return "uvc_frame";
 	case 7: return "uvc_vb2";
+	case USBTRACE_EVT_HUB: return "hub";
 	default: return "?";
 	}
 }
@@ -132,6 +145,10 @@ static long ev_field_val(const struct diag_event *e, enum diag_field f)
 	case F_VB2_NUM_BUFFERS: return e->vb2_num_buffers;
 	case F_VB2_QUEUED:     return e->vb2_queued;
 	case F_VB2_DRV_OWNED:  return e->vb2_drv_owned;
+	case F_STEP:           return e->step;
+	case F_BREQUEST:       return e->has_setup ? (long)e->brequest : -1;
+	case F_WVALUE:         return e->has_setup ? (long)e->wvalue : -1;
+	case F_RESET_RESUME:   return e->reset_resume;
 	default:           return 0;
 	}
 }
@@ -361,6 +378,11 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 				       fps, x->vb2_interval_ns / 1e6,
 				       x->vb2_bytesused,
 				       x->wire_to_vb2_ns / 1e6);
+			} else if (x->kind == USBTRACE_EVT_POWER) {
+				printf("%s{\"dt_ms\":%.1f,\"kind\":\"power\","
+				       "\"action\":\"%s\"}",
+				       i ? "," : "", dt,
+				       power_action_str(x->action));
 			} else {
 				printf("%s{\"dt_ms\":%.1f,\"kind\":\"%s\","
 				       "\"status\":%d}",
@@ -384,11 +406,12 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 			const struct diag_event *x = ev->ev[i];
 			double dt = (double)(ref_ns - x->ts_ns) / 1e9;
 
-			if (x->kind == 1) /* urb */
-				printf("    %+8.3fs urb %-8s ep%u %s status=%d\n",
+			if (x->kind == USBTRACE_EVT_URB)
+				printf("    %+8.3fs urb %-8s ep%u %s status=%d%s\n",
 				       -dt, x->is_submit ? "submit" : "complete",
 				       x->ep, x->dir_in ? "IN" : "OUT",
-				       x->status);
+				       x->status,
+				       x->has_setup ? " setup" : "");
 			else if (x->kind == USBTRACE_EVT_UVC_FRAME)
 				printf("    %+8.3fs uvc_frame %-4s %5.1ffps "
 				       "intv=%5.1fms %uB\n",
@@ -434,6 +457,19 @@ static void print_finding(struct diag_engine *e, const struct diag_rule *r,
 					       x->vb2_num_buffers, x->vb2_queued,
 					       x->vb2_drv_owned);
 			}
+			else if (x->kind == USBTRACE_EVT_POWER)
+				printf("    %+8.3fs power %s\n",
+				       -dt, power_action_str(x->action));
+			else if (x->kind == USBTRACE_EVT_HUB)
+				printf("    %+8.3fs hub action=%u port=%u\n",
+				       -dt, x->action, x->portnum);
+			else if (x->kind == USBTRACE_EVT_LIFECYCLE)
+				printf("    %+8.3fs lifecycle action=%u reset_resume=%u\n",
+				       -dt, x->action, x->reset_resume);
+			else if (x->kind == USBTRACE_EVT_ENUM)
+				printf("    %+8.3fs enum step=%u status=%d %u->%u\n",
+				       -dt, x->step, x->status,
+				       x->old_state, x->new_state);
 			else
 				printf("    %+8.3fs %s\n", -dt,
 				       kind_str(x->kind));
@@ -450,10 +486,16 @@ static long eval_when(const struct devwin *w, const struct diag_cond *c,
 		      uint64_t ref_ns, struct evidence *ev)
 {
 	long cnt = 0;
-	int i;
+	int i, nclus = 0, ev_n0 = ev ? ev->n : 0;
+	uint64_t oldest = UINT64_MAX, newest = 0, prev_ts = 0;
+	uint64_t cluster_ns = 0;
+
+	if (c->has_cluster_ms && c->cluster_ms > 0)
+		cluster_ns = (uint64_t)c->cluster_ms * 1000000ULL;
 
 	for (i = 0; i < w->count; i++) {
 		const struct diag_event *x = win_at(w, i);
+		int take;
 
 		if (x->ts_ns > ref_ns)
 			continue;
@@ -462,9 +504,30 @@ static long eval_when(const struct devwin *w, const struct diag_cond *c,
 			continue;
 		if (!cond_event_pred(c, x))
 			continue;
-		if (ev && ev->n < MAX_EVIDENCE)
-			ev->ev[ev->n++] = x;
+		if (x->ts_ns < oldest)
+			oldest = x->ts_ns;
+		if (x->ts_ns > newest)
+			newest = x->ts_ns;
 		cnt++;
+
+		take = 1;
+		if (cluster_ns) {
+			take = (nclus == 0 || prev_ts - x->ts_ns > cluster_ns);
+			prev_ts = x->ts_ns;
+			if (take)
+				nclus++;
+		}
+		if (take && ev && ev->n < MAX_EVIDENCE)
+			ev->ev[ev->n++] = x;
+	}
+	if (cluster_ns)
+		cnt = nclus;
+	if (c->has_min_span_ms &&
+	    (cnt < 2 ||
+	     newest - oldest < (uint64_t)c->min_span_ms * 1000000ULL)) {
+		if (ev)
+			ev->n = ev_n0;
+		return 0;
 	}
 	return cnt;
 }
@@ -509,7 +572,7 @@ void diag_engine_ingest(struct diag_engine *e, const struct diag_event *evt)
 		w->pid = evt->pid;
 	win_push(w, evt);
 
-	if (evt->kind == 2 /* enum */) {
+	if (evt->kind == USBTRACE_EVT_ENUM && evt->step == 0) {
 		if (evt->new_state == 0 /* NOTATTACHED: fresh enumeration */)
 			dev_reset_enum(w);
 		if (evt->new_state < 9) {
@@ -517,7 +580,8 @@ void diag_engine_ingest(struct diag_engine *e, const struct diag_event *evt)
 			if (!w->state_ts[evt->new_state])
 				w->state_ts[evt->new_state] = evt->ts_ns;
 		}
-	} else if (evt->kind == 4 /* lifecycle */ && evt->action == 1 /* disconnect */) {
+	} else if (evt->kind == USBTRACE_EVT_LIFECYCLE &&
+		   evt->action == 1 /* disconnect */) {
 		dev_reset_enum(w);
 	}
 

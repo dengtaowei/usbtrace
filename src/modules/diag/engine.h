@@ -50,6 +50,10 @@ enum diag_field {
 	F_VB2_NUM_BUFFERS,
 	F_VB2_QUEUED,
 	F_VB2_DRV_OWNED,
+	F_STEP,
+	F_BREQUEST,
+	F_WVALUE,
+	F_RESET_RESUME,
 };
 
 /* Comparison operator for a field constraint. The DSL spells these as value
@@ -90,6 +94,16 @@ struct diag_cond {
 
 	int has_count_gte;
 	long count_gte;
+
+	/* Matching events must span at least this many ms (newest-oldest).
+	 * Filters a single kernel cascade that otherwise satisfies count_gte. */
+	int has_min_span_ms;
+	long min_span_ms;
+
+	/* Events closer than this (ms) count as one. Storm rules use this so a
+	 * kernel cascade of N calls is one episode. */
+	int has_cluster_ms;
+	long cluster_ms;
 };
 
 enum diag_rule_type {

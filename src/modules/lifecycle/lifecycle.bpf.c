@@ -6,6 +6,7 @@
  *
  *   usb_new_device(struct usb_device *udev)      -> connect
  *   usb_disconnect(struct usb_device **pdev)     -> disconnect
+ *   usb_reset_device(struct usb_device *udev)    -> reset (reset_resume flag)
  *
  * usb_new_device reads descriptors only inside usb_enumerate_device(), so a
  * plain entry kprobe would often see idVendor/idProduct still 0. Stash the
@@ -50,6 +51,10 @@ static __always_inline int emit(struct pt_regs *ctx, struct usb_device *dev,
 	e.hdr.ts_ns = bpf_ktime_get_ns();
 
 	e.action = action;
+	e.reset_resume = 0;
+	if (action == LIFECYCLE_RESET)
+		e.reset_resume =
+			(__u8)BPF_CORE_READ_BITFIELD_PROBED(dev, reset_resume);
 	e.vid = vid;
 	e.product = pid;
 	e.busnum = BPF_CORE_READ(dev, bus, busnum);
@@ -82,7 +87,7 @@ int on_new_device_exit(struct pt_regs *ctx)
 	__u64 id = bpf_get_current_pid_tgid();
 	__u64 *pud;
 	struct usb_device *udev;
-	int ret = (int)USBTRACE_PT_RET(ctx);
+	int ret = usbtrace_kret_int(USBTRACE_PT_RET(ctx));
 
 	pud = bpf_map_lookup_elem(&new_dev_pending, &id);
 	if (!pud)
@@ -105,4 +110,11 @@ int on_disconnect(struct pt_regs *ctx)
 		return 0;
 	udev = usbtrace_read_kptr(pdev);
 	return emit(ctx, udev, LIFECYCLE_DISCONNECT);
+}
+
+SEC("kprobe/usb_reset_device")
+int on_reset(struct pt_regs *ctx)
+{
+	return emit(ctx, (struct usb_device *)USBTRACE_PT_PARM1(ctx),
+		    LIFECYCLE_RESET);
 }

@@ -26,7 +26,7 @@ fi
 pass=0
 fail=0
 # Core modules only inside QEMU (class hooks often absent).
-for mod in urb lifecycle enum power; do
+for mod in urb lifecycle enum power hub; do
 	echo "[guest] load $mod ..."
 	/usbtrace "$mod" >/tmp/ut-"$mod".out 2>&1 &
 	pid=$!

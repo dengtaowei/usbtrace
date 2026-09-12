@@ -53,7 +53,7 @@ deliver the requirements already promised, then build the differentiator.
       summary at exit. See [diag.md](diag.md). TODO: more rules; deadline-rule
       coverage for hub_port resets; per-rule tunables.
 - [x] **Cross-module correlation / unified timeline.** `diag` loads
-      enum+urb+lifecycle+power together and merges their events maps into one
+      enum+urb+lifecycle+power+hub together and merges their events maps into one
       poll loop, normalizing every record (`hdr.kind`-routed) onto a per-device
       (bus-dev-vid-pid) timeline. TODO: expose the merged timeline as a
       standalone view too (not just rule findings).
@@ -93,20 +93,23 @@ multi-arch + VM load testing, (3) the `diag` rule engine. The first two answer
 
 ## Phase 1 — core USB diagnosis (highest BSP value)
 
-- [x] `enum` (demo) — enumeration timeline via kprobe `usb_set_device_state`:
-      emits each `old → new` state transition (NOTATTACHED → ... → CONFIGURED),
-      so a stall/failure is visible as "stuck before ADDRESS/CONFIGURED".
-      TODO: also fold in `hub_port_*` and control GET_DESCRIPTOR/SET_ADDRESS.
-- [x] `lifecycle` (demo) — connect/disconnect via kprobe `usb_new_device` /
-      `usb_disconnect`. TODO: reset tracking + correlate `usb_disconnect` with
-      preceding URB errors.
-- [x] `power` (demo) — autosuspend/autoresume via kprobe
+- [x] `enum` — enumeration timeline via kprobe `usb_set_device_state` plus
+      ep0 milestones (`usb_get_device_descriptor` / `hub_set_address` /
+      `usb_set_configuration` kretprobes, with return status).
+- [x] `lifecycle` — connect/disconnect via kprobe `usb_new_device` /
+      `usb_disconnect`, plus `usb_reset_device` with the `reset_resume` flag.
+      `diag` correlates disconnect with preceding URB errors and reset storms.
+- [x] `hub` — port reset / disable / VBUS power / overcurrent
+      (`hub_port_reset`, `hub_port_disable`, `usb_hub_set_port_power`,
+      `port_over_current_notify`). Events carry the child device when the port
+      has one.
+- [x] `power` — autosuspend/autoresume via kprobe
       `usb_autosuspend_device` / `usb_autoresume_device`. TODO: correlate with
       URB activity; resume-fail and remote-wakeup issues.
 - [x] `diag` mode — nettrace-style rule engine across modules (e.g. "disconnect
-      preceded by N bulk errors → suspect link/power"). Output: conclusion +
-      evidence chain, not raw dumps. YAML knowledge base, live + summary; see
-      [diag.md](diag.md).
+      preceded by N bulk errors → suspect link/power"; GET_DESCRIPTOR `-71`
+      then port POWER_OFF; SET_INTERFACE `-ENOSPC`). YAML knowledge base, live
+      + summary; see [diag.md](diag.md).
 
 ## Phase 2 — class subsystems (req #3 explicit targets)
 

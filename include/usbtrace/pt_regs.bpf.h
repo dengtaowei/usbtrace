@@ -57,6 +57,8 @@ static __always_inline void *usbtrace_read_kptr(const void *addr)
 	return (void *)(unsigned long)p;
 }
 
+#define USBTRACE_KPTR_SIZE 4
+
 #else /* 64-bit arches: libbpf PT_REGS_* is correct */
 
 #define USBTRACE_PT_PARM1(ctx) ((unsigned long)PT_REGS_PARM1(ctx))
@@ -79,6 +81,56 @@ static __always_inline void *usbtrace_read_kptr(const void *addr)
 	return p;
 }
 
+#define USBTRACE_KPTR_SIZE 8
+
 #endif
+
+/*
+ * Sign-extend a kretprobe return to 64-bit. BPF `unsigned long` is always 64
+ * bits; ARM32/i386 r0/eax is a 32-bit slot that we zero-extend when reading
+ * pt_regs, so a negative errno would look like success without this.
+ */
+static __always_inline long usbtrace_kret_sx(unsigned long rc)
+{
+#if defined(__TARGET_ARCH_arm) || defined(__TARGET_ARCH_i386)
+	return (long)(__s32)rc;
+#else
+	return (long)rc;
+#endif
+}
+
+/* Functions that return int on every supported kernel (0 / byte count / -errno). */
+static __always_inline __s32 usbtrace_kret_int(unsigned long rc)
+{
+	return (__s32)usbtrace_kret_sx(rc);
+}
+
+/*
+ * usb_get_device_descriptor ABI:
+ *   pre-6.6  int: byte count (>=0) or -errno
+ *   6.6+     struct usb_device_descriptor * or ERR_PTR(-errno)
+ * Map both to __s32: 0 or the old byte count on success, -errno on failure.
+ */
+static __always_inline __s32 usbtrace_kret_ptr_or_int(unsigned long rc)
+{
+	unsigned long v = (unsigned long)usbtrace_kret_sx(rc);
+
+	if (v >= (unsigned long)-4095UL)	/* IS_ERR() / negative int */
+		return (__s32)(long)v;
+	if (v < 4096UL)				/* 0 or byte count */
+		return (__s32)v;
+	return 0;				/* non-NULL pointer: success */
+}
+
+/*
+ * Index a kernel pointer array. BPF sizeof(void *) is always 8; the kernel
+ * slot is 4 bytes on ARM32/i386 (e.g. usb_hub.ports[]).
+ */
+static __always_inline void *usbtrace_kptr_idx(const void *arr, int idx)
+{
+	if (!arr || idx < 0 || idx > 15)
+		return NULL;
+	return usbtrace_read_kptr((const char *)arr + idx * USBTRACE_KPTR_SIZE);
+}
 
 #endif /* __USBTRACE_PT_REGS_BPF_H */
