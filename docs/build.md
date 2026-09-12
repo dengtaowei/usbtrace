@@ -94,3 +94,4 @@ Notes:
 | `failed to load BPF skeleton` | run as root; verify BTF; check `dmesg` for verifier logs (`-v`) |
 | permission denied loading BPF | run with `sudo`; on locked-down systems `kernel.unprivileged_bpf_disabled=2` requires root |
 | `urb` silent on ARM32 under real USB traffic | fixed in `pt_regs.bpf.h`: multi-arg kprobes must not use `BPF_KPROBE(fn, a, b, …)` on 32-bit |
+| `lifecycle` CONNECT `0000:0000` / no DISCONNECT on x86_64 | do not `__u32`-truncate kernel pointers; kretprobe return is `USBTRACE_PT_RET` (not PARM1) |

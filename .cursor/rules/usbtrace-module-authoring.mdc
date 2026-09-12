@@ -84,6 +84,10 @@ examples.
 Prefer stable tracepoints when available; otherwise kprobes on USB core
 functions (`usb_submit_urb`, `usb_hcd_giveback_urb`, `usb_disconnect`, ...).
 
+Kretprobe return values go through `USBTRACE_PT_RET()` (rax on x86_64, r0 on
+ARM32). Do not `__u32`-cast kernel pointers in module code; use `USBTRACE_KPTR`
+/ `USBTRACE_PTR_KEY` so 64-bit addresses stay intact.
+
 Hooks that may be absent on some kernels are handled automatically: the run
 harness calls `usbtrace_autoload_filter()` (`usbtrace/probe.h`) before load,
 which reads each program's `SEC()` name, checks the target
