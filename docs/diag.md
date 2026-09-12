@@ -1,7 +1,7 @@
 # diag — USB diagnosis rule engine
 
 `diag` is usbtrace's differentiator: instead of dumping raw events, it loads the
-`urb`, `enum`, `lifecycle`, and `power` probes **together**, merges their event
+`urb`, `enum`, `lifecycle`, `power`, and `hub` probes **together**, merges their event
 streams per device, and runs a YAML-driven rule engine that emits **conclusions
 + evidence chains** (nettrace-style), live and as an end-of-session summary.
 
@@ -15,7 +15,7 @@ sudo usbtrace --json diag | jq                  # machine-readable findings
 ## How it works
 
 ```
-urb/enum/lifecycle/power + class (uvc/uac/hid/storage) skeletons (reused)
+urb/enum/lifecycle/power/hub + class (uvc/uac/hid/storage) skeletons (reused)
         │  one poll loop over all `events` maps (usbtrace_evmux)
         ▼
 normalized struct diag_event  (routed by hdr.kind)
@@ -94,25 +94,32 @@ Deadline example:
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | `urb` \| `enum` \| `power` \| `lifecycle` \| `class` \| `uvc_frame` |
+| `kind` | `urb` \| `enum` \| `power` \| `lifecycle` \| `hub` \| `class` \| `uvc_frame` |
 | `match` | `{ field: value, ... }` constraint per field. The value prefix selects the operator: bare = equals, `!v` = not-equal (e.g. `error_count: "!0"`), `>=v` / `<=v` = numeric compare (e.g. `frame_interval_ns: ">=66000000"`) |
 | `status_in` | list; status is one of these (use negative errnos) |
 | `within_ms` | only consider events within N ms before the trigger |
 | `count_gte` | require at least N matching events (default 1) |
+| `min_span_ms` | matching events must span at least N ms |
+| `cluster_ms` | events closer than N ms count as one (a kernel cascade is one episode) |
 
 ### Event fields (usable in `match` / `trigger`)
 
 `kind`, `is_submit`, `status`, `xfer_type`, `dir_in`, `ep`, `action`,
-`old_state`, `new_state`, `latency_ns`, `actual`, `length`, `error_count`,
-`class`, and (for `kind: uvc_frame`) `frame_bytes`, `frame_interval_ns`,
-`frame_errored`.
+`old_state`, `new_state`, `step`, `brequest`, `wvalue`, `reset_resume`,
+`latency_ns`, `actual`, `length`, `error_count`, `class`, and (for
+`kind: uvc_frame`) `frame_bytes`, `frame_interval_ns`, `frame_errored`.
 
 Values may be numeric (`0`, `-71`, `0x6001`) or symbolic:
 
-- kinds: `urb` `enum` `power` `lifecycle` `class` `uvc_frame`
+- kinds: `urb` `enum` `power` `lifecycle` `hub` `class` `uvc_frame`
 - classes (for `class:`): `video` `audio` `hid` `storage`
 - xfer types (for `xfer_type:`): `isoc` `int` `control` `bulk`
-- actions: `connect` `disconnect` (lifecycle), `autosuspend` `autoresume` (power)
+- actions: `connect` `disconnect` `reset` (lifecycle);
+  `autosuspend` `autoresume` `port_suspend` `port_resume` (power);
+  `hub_reset` `hub_disable` `hub_power_off` `hub_power_on` `hub_overcurrent` (hub)
+- enum steps (for `step:`): `enum_state` `get_descriptor` `set_address`
+  `set_configuration`
+- urb `brequest:` names: `GET_DESCRIPTOR` `SET_INTERFACE` `SET_CONFIGURATION` …
 - states: `NOTATTACHED` `ATTACHED` `POWERED` `RECONNECTING` `UNAUTHED`
   `DEFAULT` `ADDRESS` `CONFIGURED` `SUSPENDED`
 
@@ -134,6 +141,11 @@ Usable in `conclusion` / `fix`: `{vid}` `{pid}` `{bus}` `{dev}` `{count}`
 | `storage-transfer-errors` | error | mass-storage bulk errors → SCSI reset / cable/power/device |
 | `video-frame-drops` | warn | repeated dropped/corrupt UVC frames → visible glitches |
 | `video-low-fps` | warn | UVC frames sustained slower than ~15fps → bandwidth/negotiation |
+| `enum-power-cycle` | error | GET_DESCRIPTOR `-71` then hub port POWER_OFF → VBUS cycle retry |
+| `reset-resume-disconnect` | error | `usb_reset_device` on the reset_resume path, then disconnect |
+| `reset-storm` | warn | repeated `usb_reset_device` in a short window → error-recovery loop |
+| `set-interface-nospc` | error | SET_INTERFACE completed `-ENOSPC` → isoc bandwidth reservation failed |
+| `port-overcurrent` | error | hub reported port overcurrent (VBUS likely off) |
 
 ## Output
 

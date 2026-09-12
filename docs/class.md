@@ -201,7 +201,7 @@ below). `uvc_frame_event` fields: `bytes`, `packets`, `err_packets`,
 
 ## diag cooperation & rules
 
-diag loads every class source alongside urb/enum/lifecycle/power and normalizes
+diag loads every class source alongside urb/enum/lifecycle/power/hub and normalizes
 class events into the same per-device timeline. Rules address them with
 `kind: class` and the `class:` field, e.g. the built-ins:
 

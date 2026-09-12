@@ -7,7 +7,7 @@
 # Usage:
 #   scripts/smoke-load.sh              # uses build/usbtrace
 #   USBTRACE_BIN=./dist/foo scripts/smoke-load.sh
-#   scripts/smoke-load.sh --quick      # core modules only (urb/lifecycle/enum/power)
+#   scripts/smoke-load.sh --quick      # core modules only (urb/lifecycle/enum/power/hub)
 #
 # Needs: root (or passwordless sudo), kernel BTF, CONFIG_KPROBES.
 # Does not require a physical USB device. Class modules whose hooks are absent
@@ -24,7 +24,7 @@ QUICK=0
 TIMEOUT_SEC="${SMOKE_TIMEOUT:-3}"
 DIAG_TIMEOUT_SEC="${SMOKE_DIAG_TIMEOUT:-6}"
 
-CORE_MODS=(urb lifecycle enum power)
+CORE_MODS=(urb lifecycle enum power hub)
 CLASS_MODS=(hid uac storage uvc)
 # diag loads several skeletons; keep last so failures there are obvious.
 EXTRA_MODS=(diag)

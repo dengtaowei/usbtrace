@@ -3,7 +3,7 @@
  * diag module: nettrace-style USB diagnosis.
  *
  * Unlike a tracing module, diag loads SEVERAL existing BPF skeletons at once
- * (urb/enum/lifecycle/power), merges their events maps into one poll loop, and
+ * (urb/enum/lifecycle/power/hub), merges their events maps into one poll loop, and
  * feeds the normalized event stream to a YAML-driven rule engine. The engine
  * correlates events per device and emits conclusions + evidence chains live,
  * with a summary at exit. No new BPF is written; diag reuses the verified
@@ -35,10 +35,12 @@
 #include "enum/enum.h"
 #include "lifecycle/lifecycle.h"
 #include "power/power.h"
+#include "hub/hub.h"
 #include "urb.skel.h"
 #include "enum.skel.h"
 #include "lifecycle.skel.h"
 #include "power.skel.h"
+#include "hub.skel.h"
 /* class-traffic skeletons (all share struct usbtrace_class_config) */
 #include "uvc.skel.h"
 #include "uac.skel.h"
@@ -115,7 +117,7 @@ static void diag_usage(void)
 {
 	fprintf(stderr,
 		"usbtrace diag - correlate USB events into diagnoses\n\n"
-		"Loads the urb/enum/lifecycle/power probes together and runs a\n"
+		"Loads the urb/enum/lifecycle/power/hub probes together and runs a\n"
 		"YAML rule engine over the merged, per-device event stream,\n"
 		"emitting conclusions + evidence live and a summary at exit.\n\n"
 		"Options:\n"
@@ -186,6 +188,12 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		out->dir_in = e->dir_in;
 		out->ep = e->ep;
 		out->is_submit = e->is_submit;
+		out->has_setup = e->has_setup;
+		if (e->has_setup) {
+			out->brequest = e->setup[1];
+			out->wvalue = (__u16)e->setup[2] |
+				      ((__u16)e->setup[3] << 8);
+		}
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
 	}
@@ -202,6 +210,8 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 		out->portnum = e->portnum;
 		out->old_state = e->old_state;
 		out->new_state = e->new_state;
+		out->step = e->step;
+		out->status = e->status;
 		memcpy(out->devpath, e->devpath, sizeof(out->devpath));
 		memcpy(out->comm, e->comm, sizeof(out->comm));
 		break;
@@ -224,6 +234,23 @@ static int normalize(const void *data, size_t len, struct diag_event *out)
 	}
 	case USBTRACE_EVT_LIFECYCLE: {
 		const struct lifecycle_event *e = data;
+
+		if (len < sizeof(*e))
+			return -1;
+		out->vid = e->vid;
+		out->pid = e->product;
+		out->busnum = e->busnum;
+		out->devnum = e->devnum;
+		out->speed = e->speed;
+		out->portnum = e->portnum;
+		out->action = e->action;
+		out->reset_resume = e->reset_resume;
+		memcpy(out->devpath, e->devpath, sizeof(out->devpath));
+		memcpy(out->comm, e->comm, sizeof(out->comm));
+		break;
+	}
+	case USBTRACE_EVT_HUB: {
+		const struct hub_event *e = data;
 
 		if (len < sizeof(*e))
 			return -1;
@@ -330,6 +357,7 @@ static int diag_run(volatile bool *running)
 	struct enum_bpf *en = NULL;
 	struct lifecycle_bpf *lc = NULL;
 	struct power_bpf *pw = NULL;
+	struct hub_bpf *hub = NULL;
 	void *class_h[DIAG_N_CLASS_SRCS] = { 0 };
 	struct usbtrace_evmux *mux = NULL;
 	struct diag_engine *eng = NULL;
@@ -406,6 +434,17 @@ static int diag_run(volatile bool *running)
 			pw = NULL;
 		}
 	}
+	hub = hub_bpf__open();
+	if (hub) {
+		hub->rodata->cfg.filter_vid = (unsigned short)opts.filt.vid;
+		hub->rodata->cfg.filter_pid = (unsigned short)opts.filt.pid;
+		if (usbtrace_autoload_filter(hub->obj) == 0 ||
+		    hub_bpf__load(hub) || hub_bpf__attach(hub)) {
+			ut_warn("diag: hub probe unavailable, skipping");
+			hub_bpf__destroy(hub);
+			hub = NULL;
+		}
+	}
 
 	/* Class-traffic sources (uvc/uac/hid/storage): uniform, table-driven.
 	 * Each skeleton is feature-probed per program first, so a missing hook
@@ -442,6 +481,8 @@ static int diag_run(volatile bool *running)
 	if (lc && usbtrace_evmux_add(mux, lc->maps.events) == 0)
 		nsrc++;
 	if (pw && usbtrace_evmux_add(mux, pw->maps.events) == 0)
+		nsrc++;
+	if (hub && usbtrace_evmux_add(mux, hub->maps.events) == 0)
 		nsrc++;
 	for (i = 0; i < DIAG_N_CLASS_SRCS; i++) {
 		if (class_h[i] &&
@@ -492,6 +533,7 @@ cleanup:
 	enum_bpf__destroy(en);
 	lifecycle_bpf__destroy(lc);
 	power_bpf__destroy(pw);
+	hub_bpf__destroy(hub);
 	for (i = 0; i < DIAG_N_CLASS_SRCS; i++)
 		if (class_h[i])
 			diag_class_srcs[i].destroy(class_h[i]);
@@ -501,7 +543,7 @@ cleanup:
 
 static struct usbtrace_module diag_module = {
 	.name = "diag",
-	.summary = "correlate URB/enum/lifecycle/power/class into diagnoses (rule engine)",
+	.summary = "correlate URB/enum/lifecycle/power/hub/class into diagnoses (rule engine)",
 	.parse_args = diag_parse_args,
 	.usage = diag_usage,
 	.run = diag_run,

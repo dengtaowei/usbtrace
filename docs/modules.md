@@ -5,10 +5,11 @@
 | Module | Status | Hooks | Purpose |
 |--------|--------|-------|---------|
 | `urb`  | working | kprobe `usb_submit_urb`, `usb_hcd_giveback_urb` | URB submit/complete, submit→complete latency, per-device filter. Control URBs include the 8-byte setup packet, decoded as `SET_FEATURE` / `CLEAR_FEATURE` / `GET_STATUS` / … (`--ctrl` to keep only ep0). |
-| `enum` | working | kprobe `usb_set_device_state` | Enumeration timeline: emits each `old → new` device-state transition so a stalled/failed bring-up is visible (e.g. stuck before `ADDRESS`/`CONFIGURED`). Per-device filter. |
-| `lifecycle` | working | kprobe `usb_new_device`, `usb_disconnect` | Connect (enumeration done) / disconnect (teardown start) events with speed + topology path. Per-device filter. |
+| `hub`  | working | kprobe `hub_port_reset`, `hub_port_disable`, `usb_hub_set_port_power`, `port_over_current_notify` | Hub port decisions: reset, disable, VBUS on/off, overcurrent. Prefers the child `usb_device` so `(bus,dev)` matches other device-scoped modules. Per-device filter. |
+| `enum` | working | kprobe `usb_set_device_state`; kretprobe `usb_get_device_descriptor`, `hub_set_address`, `usb_set_configuration` | Enumeration timeline: `old → new` device-state **and** ep0 milestones (GET_DESCRIPTOR / SET_ADDRESS / SET_CONFIGURATION with kretprobe status). Per-device filter. |
+| `lifecycle` | working | kprobe `usb_new_device`, `usb_disconnect`, `usb_reset_device` | Connect (enumeration done) / disconnect (teardown start) / `usb_reset_device` (with `reset_resume` flag). Per-device filter. |
 | `power` | working | kprobe `usb_autosuspend_device`, `usb_autoresume_device`, `usb_port_suspend`, `usb_port_resume` | Runtime PM plus actual port suspend/resume (also used by system sleep). Pair with `urb --ctrl` to see the SET/CLEAR_FEATURE packets. Per-device filter. |
-| `diag`  | working | none (reuses urb/enum/lifecycle/power/class) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
+| `diag`  | working | none (reuses urb/enum/lifecycle/power/hub/class) | Cross-module rule engine: correlates events per device and emits conclusions + evidence chains from a YAML knowledge base. See [diag.md](diag.md). |
 | `uvc`   | working | kprobe `uvc_video_complete` | USB Video Class: per-URB isoc health **plus frame-level diagnosis** (real FPS, frame drops/corruption, PTS/SCR jitter) by parsing UVC payload headers in BPF. Class-traffic module with added depth; see [class.md](class.md). |
 | `uac`   | working | kprobe `snd_complete_urb` | USB Audio Class streaming health (isoc errors / xruns, capture+playback). See [class.md](class.md). |
 | `hid`   | working | kprobe `hid_irq_in`, `hid_irq_out` | USB HID report flow (in/out, errors; OUT = SET_REPORT) plus a realtime per-endpoint IN report rate (kbd/mouse). See [class.md](class.md). |

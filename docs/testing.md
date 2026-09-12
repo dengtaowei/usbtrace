@@ -13,7 +13,7 @@ missing on the running kernel are **SKIP**, not FAIL.
 ```bash
 make                          # native binary → build/usbtrace
 sudo ./scripts/smoke-load.sh
-sudo ./scripts/smoke-load.sh --quick   # urb lifecycle enum power only
+sudo ./scripts/smoke-load.sh --quick   # urb lifecycle enum power hub only
 ```
 
 `make smoke` is a thin wrapper around the same script (still needs a root-capable

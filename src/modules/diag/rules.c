@@ -25,15 +25,29 @@ struct symbol {
 static const struct symbol kind_syms[] = {
 	{ "urb", 1 }, { "enum", 2 }, { "power", 3 }, { "lifecycle", 4 },
 	{ "class", 5 }, { "uvc_frame", 6 }, { "uvc_vb2", 7 },
+	{ "hub", 9 },
 	{ NULL, 0 },
 };
 
 /* action + device-state names, usable as scalar values in the DSL. */
 static const struct symbol enum_syms[] = {
 	/* lifecycle_action */
-	{ "connect", 0 }, { "disconnect", 1 },
+	{ "connect", 0 }, { "disconnect", 1 }, { "reset", 2 },
 	/* power_action */
 	{ "autosuspend", 0 }, { "autoresume", 1 },
+	{ "port_suspend", 2 }, { "port_resume", 3 },
+	/* hub_action (kind: hub) */
+	{ "hub_reset", 0 }, { "hub_disable", 1 },
+	{ "hub_power_off", 2 }, { "hub_power_on", 3 },
+	{ "hub_overcurrent", 4 },
+	/* enum_step */
+	{ "enum_state", 0 }, { "get_descriptor", 1 },
+	{ "set_address", 2 }, { "set_configuration", 3 },
+	/* usb_ctrlrequest.bRequest (for urb brequest:) */
+	{ "GET_STATUS", 0 }, { "CLEAR_FEATURE", 1 }, { "SET_FEATURE", 3 },
+	{ "SET_ADDRESS", 5 }, { "GET_DESCRIPTOR", 6 },
+	{ "SET_CONFIGURATION", 9 }, { "GET_INTERFACE", 10 },
+	{ "SET_INTERFACE", 11 },
 	/* enum usb_device_state */
 	{ "NOTATTACHED", 0 }, { "ATTACHED", 1 }, { "POWERED", 2 },
 	{ "RECONNECTING", 3 }, { "UNAUTHED", 4 }, { "DEFAULT", 5 },
@@ -76,6 +90,10 @@ static const struct symbol field_syms[] = {
 	{ "vb2_num_buffers", F_VB2_NUM_BUFFERS },
 	{ "vb2_queued", F_VB2_QUEUED },
 	{ "vb2_drv_owned", F_VB2_DRV_OWNED },
+	{ "step", F_STEP },
+	{ "brequest", F_BREQUEST },
+	{ "wvalue", F_WVALUE },
+	{ "reset_resume", F_RESET_RESUME },
 	{ NULL, 0 },
 };
 
@@ -235,7 +253,7 @@ static int parse_match_map(yaml_document_t *doc, yaml_node_t *map,
 	return 0;
 }
 
-/* Parse a "when" item mapping (kind/match/status_in/within_ms/count_gte). */
+/* Parse a "when" item mapping (kind/match/status_in/within_ms/count_gte/...). */
 static int parse_when(yaml_document_t *doc, yaml_node_t *item,
 		      struct diag_cond *c, char *err, size_t errsz)
 {
@@ -277,6 +295,18 @@ static int parse_when(yaml_document_t *doc, yaml_node_t *item,
 	if ((s = node_scalar(doc, n))) {
 		c->has_count_gte = 1;
 		c->count_gte = strtol(s, NULL, 0);
+	}
+
+	n = map_get(doc, item, "min_span_ms");
+	if ((s = node_scalar(doc, n))) {
+		c->has_min_span_ms = 1;
+		c->min_span_ms = strtol(s, NULL, 0);
+	}
+
+	n = map_get(doc, item, "cluster_ms");
+	if ((s = node_scalar(doc, n))) {
+		c->has_cluster_ms = 1;
+		c->cluster_ms = strtol(s, NULL, 0);
 	}
 	return 0;
 }

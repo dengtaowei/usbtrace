@@ -23,6 +23,8 @@ static const char *action_str(__u8 a)
 		return "CONNECT";
 	case LIFECYCLE_DISCONNECT:
 		return "DISCONNECT";
+	case LIFECYCLE_RESET:
+		return "RESET";
 	default:
 		return "?";
 	}
@@ -31,7 +33,7 @@ static const char *action_str(__u8 a)
 static void lifecycle_usage(void)
 {
 	fprintf(stderr,
-		"usbtrace lifecycle - trace USB connect/disconnect events\n\n"
+		"usbtrace lifecycle - trace USB connect/disconnect/reset events\n\n"
 		"Options:\n"
 		"  --vid <hex>     filter by idVendor (e.g. 0x0403)\n"
 		"  --pid <hex>     filter by idProduct\n"
@@ -63,24 +65,31 @@ static int handle_event(void *ctx, void *data, size_t len)
 
 		printf("{\"event\":\"lifecycle\",\"action\":\"%s\","
 		       "\"speed\":\"%s\",\"vid\":\"0x%04x\",\"pid\":\"0x%04x\","
-		       "\"bus\":%u,\"dev\":%u,\"port\":%u,\"path\":\"%s\","
-		       "\"comm\":\"%s\"}\n",
+		       "\"bus\":%u,\"dev\":%u,\"port\":%u,\"reset_resume\":%u,"
+		       "\"path\":\"%s\",\"comm\":\"%s\"}\n",
 		       action_str(e->action), usbtrace_speed_str(e->speed),
 		       e->vid, e->product, e->busnum, e->devnum, e->portnum,
+		       e->reset_resume,
 		       usbtrace_json_escape(e->devpath, path, sizeof(path)),
 		       usbtrace_json_escape(e->comm, comm, sizeof(comm)));
 	} else {
-		printf("%-10s %-6s %04x:%04x %u-%u port%u path=%s %s\n",
-		       action_str(e->action), usbtrace_speed_str(e->speed),
-		       e->vid, e->product, e->busnum, e->devnum, e->portnum,
-		       e->devpath[0] ? e->devpath : "-", e->comm);
+		if (e->action == LIFECYCLE_RESET && e->reset_resume)
+			printf("%-10s %-6s %04x:%04x %u-%u port%u path=%s %s reset_resume\n",
+			       action_str(e->action), usbtrace_speed_str(e->speed),
+			       e->vid, e->product, e->busnum, e->devnum, e->portnum,
+			       e->devpath[0] ? e->devpath : "-", e->comm);
+		else
+			printf("%-10s %-6s %04x:%04x %u-%u port%u path=%s %s\n",
+			       action_str(e->action), usbtrace_speed_str(e->speed),
+			       e->vid, e->product, e->busnum, e->devnum, e->portnum,
+			       e->devpath[0] ? e->devpath : "-", e->comm);
 	}
 	return 0;
 }
 
 static void lifecycle_on_start(void)
 {
-	ut_info("tracing USB connect/disconnect... vid=0x%04x pid=0x%04x (Ctrl-C to stop)",
+	ut_info("tracing USB connect/disconnect/reset... vid=0x%04x pid=0x%04x (Ctrl-C to stop)",
 		opts.vid, opts.pid);
 	if (!usbtrace_json)
 		printf("%-10s %-6s %s\n", "ACTION", "SPEED",
@@ -112,7 +121,7 @@ static int lifecycle_run(volatile bool *running)
 
 static struct usbtrace_module lifecycle_module = {
 	.name = "lifecycle",
-	.summary = "trace USB connect/disconnect events",
+	.summary = "trace USB connect/disconnect/reset events",
 	.parse_args = lifecycle_parse_args,
 	.usage = lifecycle_usage,
 	.run = lifecycle_run,

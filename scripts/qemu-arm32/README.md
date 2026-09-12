@@ -2,7 +2,7 @@
 
 Optional maintainer tooling: boot `qemu-system-arm -M virt` with an initramfs
 that contains a **static armhf `usbtrace` (perf backend)** and runs a short
-load/attach smoke for `urb`, `lifecycle`, `enum`, and `power`.
+load/attach smoke for `urb`, `lifecycle`, `enum`, `power`, and `hub`.
 
 This path exists because several production BSPs are **Linux 5.4 + ARMv7 +
 perf events**; host x86_64/ringbuf smoke does not catch those bugs. It is

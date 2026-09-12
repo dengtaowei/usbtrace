@@ -17,8 +17,9 @@ Working modules:
 | Module | Traces |
 |--------|--------|
 | **`urb`** | URB submit/complete + submit→complete latency |
-| **`enum`** | enumeration state timeline (connect → ... → configured) |
-| **`lifecycle`** | device connect / disconnect |
+| **`enum`** | enumeration state timeline + ep0 GET_DESC/SET_ADDR/SET_CONFIG |
+| **`lifecycle`** | device connect / disconnect / reset |
+| **`hub`** | hub port reset / disable / VBUS / overcurrent |
 | **`power`** | autosuspend / autoresume |
 | **`uvc`** | USB Video Class streaming health (isoc errors / frame drops) |
 | **`uac`** | USB Audio Class streaming health (isoc errors / xruns) |

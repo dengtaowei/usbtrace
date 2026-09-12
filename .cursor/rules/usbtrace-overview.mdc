@@ -39,8 +39,9 @@ Built on libbpf + CO-RE; portable across kernels and x86/x86_64/arm/arm64.
   harness; `diag` calls it before its manual `__load`.
 - `include/usbtrace/class.h` + `class_*` + `src/class_stream.c` — class-traffic
   foundation shared by uvc/uac/hid/storage (one `class_urb_event`); feeds `diag`.
-- `src/modules/urb/` — reference tracing module; `src/modules/uvc/` — reference
-  class module; `src/modules/diag/` — cross-module rule engine.
+- `src/modules/urb/` — reference tracing module; `src/modules/hub/` — port-level
+  hub actions; `src/modules/uvc/` — reference class module; `src/modules/diag/`
+  — cross-module rule engine.
 - `docs/` — architecture, modules, class, diag, roadmap, build. Keep updated.
 
 ## Conventions

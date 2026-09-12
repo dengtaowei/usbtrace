@@ -1,6 +1,6 @@
 # usbtrace diag knowledge base.
 #
-# Each rule correlates events from the urb/enum/lifecycle/power probes per
+# Each rule correlates events from the urb/enum/lifecycle/power/hub probes per
 # device (bus,dev) and emits a conclusion + suggested fix.
 #
 # Rule types:
@@ -10,14 +10,26 @@
 #              `without_state` within `timeout_ms` (checked periodically).
 #
 # Lookback condition fields:
-#   kind        urb | enum | power | lifecycle | class | uvc_frame | uvc_vb2
+#   kind        urb | enum | power | lifecycle | hub | class | uvc_frame | uvc_vb2
 #   match       { field: value, ... }   per-field constraint. The value prefix
 #                                       picks the operator: bare = equals,
 #                                       "!v" = not-equal, ">=v" / "<=v" =
 #                                       numeric compare (e.g. frame_interval_ns).
-#   status_in   [ ... ]                 urb->status is one of these
+#   status_in   [ ... ]                 urb->status / enum kretprobe status
 #   within_ms   N                       only events within N ms before trigger
 #   count_gte   N                       need at least N matching events
+#   min_span_ms N                       matching events must span at least N ms
+#   cluster_ms  N                       events closer than N ms count as one
+#                                       (a kernel cascade is one episode)
+#
+# Match fields also include:
+#   step          enum_state | get_descriptor | set_address | set_configuration
+#   brequest      GET_DESCRIPTOR | SET_INTERFACE | ... (urb setup, little-endian)
+#   wvalue        urb setup wValue (only when has_setup)
+#   reset_resume  1 if lifecycle RESET ran the reset_resume path
+#   action        connect/disconnect/reset (lifecycle);
+#                 autosuspend/autoresume/port_suspend/port_resume (power);
+#                 hub_reset/hub_disable/hub_power_off/hub_power_on/hub_overcurrent
 #
 # Template vars usable in conclusion/fix: {vid} {pid} {bus} {dev} {count}
 # {window} {comm}.
@@ -59,7 +71,8 @@ rules:
         match: { action: autoresume }
         within_ms: 5000
         count_gte: 5
-    conclusion: "Device {vid}:{pid} autoresumed {count} times within {window}ms; power state is thrashing."
+        cluster_ms: 50
+    conclusion: "Device {vid}:{pid} had {count} autoresume bursts within {window}ms; power state is thrashing."
     fix: "Investigate the wakeup source / chatty driver; consider pinning power state or fixing remote-wakeup."
 
   - id: enum-stall
@@ -190,3 +203,64 @@ rules:
         count_gte: 3
     conclusion: "Video device {vid}:{pid}: wire frames arrived {count} times with no vb2 queued buffer within {window}ms — app likely slow to QBUF."
     fix: "Increase buffer count in the capturing app; check DQBUF→QBUF latency and CPU load."
+
+  # Hub port actions vs usb_reset_device: match on kind + action
+  # (`hub_reset` vs lifecycle `reset`).
+
+  - id: enum-power-cycle
+    name: "GET_DESCRIPTOR failures then port power-off"
+    severity: error
+    trigger: { kind: hub, action: hub_power_off }
+    when:
+      - kind: enum
+        match: { step: get_descriptor }
+        status_in: [-71]
+        within_ms: 3000
+        count_gte: 2
+    conclusion: "Device {vid}:{pid} (bus{bus}-dev{dev}) hit {count} GET_DESCRIPTOR EPROTO (-71) then the hub powered the port off; enumeration is retrying via a VBUS cycle."
+    fix: "Check the cable/connector and port power budget; try another port."
+
+  - id: reset-resume-disconnect
+    name: "reset_resume then disconnect"
+    severity: error
+    trigger: { kind: lifecycle, action: disconnect }
+    when:
+      - kind: lifecycle
+        match: { action: reset, reset_resume: 1 }
+        within_ms: 2000
+        count_gte: 1
+    conclusion: "Device {vid}:{pid} disconnected within {window}ms of a reset_resume reset; the resume-time re-verify failed."
+    fix: "Check whether the device survives system/runtime resume; look for a VBUS drop or a missing reset_resume quirk."
+
+  - id: reset-storm
+    name: "usb_reset_device storm"
+    severity: warn
+    trigger: { kind: lifecycle, action: reset }
+    when:
+      - kind: lifecycle
+        match: { action: reset }
+        within_ms: 5000
+        count_gte: 4
+        cluster_ms: 50
+    conclusion: "Device {vid}:{pid} was reset {count} times within {window}ms; error recovery is looping."
+    fix: "Check dmesg for who is calling usb_reset_device, then inspect cable/power before blaming the HCD."
+
+  - id: set-interface-nospc
+    name: "SET_INTERFACE failed with ENOSPC"
+    severity: error
+    trigger: { kind: urb, brequest: SET_INTERFACE, is_submit: 0 }
+    when:
+      - kind: urb
+        match: { brequest: SET_INTERFACE, is_submit: 0 }
+        status_in: [-28]
+        within_ms: 2000
+        count_gte: 1
+    conclusion: "Device {vid}:{pid} SET_INTERFACE returned -ENOSPC ({count} time(s) in {window}ms); the host could not reserve periodic bandwidth for the altsetting."
+    fix: "Lower the altsetting bandwidth, unplug other isoc/interrupt devices on the same bus, or move this device to another controller port."
+
+  - id: port-overcurrent
+    name: "Hub port overcurrent"
+    severity: error
+    trigger: { kind: hub, action: hub_overcurrent }
+    conclusion: "Device {vid}:{pid} (bus{bus}-dev{dev}) saw a hub port overcurrent; VBUS was likely shut off."
+    fix: "Unplug other devices on that hub, check the cable/device for a short, and use a powered hub if the port budget is too small."

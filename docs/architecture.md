@@ -3,8 +3,9 @@
 `usbtrace` is an eBPF-based USB subsystem tracer & diagnostic tool for Linux
 BSP work, inspired by [nettrace](https://github.com/OpenCloudOS/nettrace). Where
 nettrace tracks an `skb` through the network stack, usbtrace tracks USB device
-lifecycle, URBs, power events, and class-level traffic (UVC/UAC/HID/storage),
-and correlates them into diagnoses via the `diag` rule engine.
+lifecycle, hub port actions, URBs, power events, and class-level traffic
+(UVC/UAC/HID/storage), and correlates them into diagnoses via the `diag` rule
+engine.
 
 ## Design goals
 
@@ -16,6 +17,21 @@ and correlates them into diagnoses via the `diag` rule engine.
    target.
 3. **Self-contained toolchain** — libbpf and bpftool are vendored as pinned git
    submodules (see `docs/build.md`), avoiding fragile distro packages.
+
+## USB observation layers
+
+Host USB tracing is split by layer. `diag` correlates records by `(bus,dev)`.
+
+| Layer | Module | `hdr.kind` | Answers |
+|-------|--------|------------|---------|
+| Port | `hub` | `USBTRACE_EVT_HUB` | Why did this hub port reset / disable / lose VBUS / overcurrent? |
+| Device identity | `lifecycle` | `USBTRACE_EVT_LIFECYCLE` | Did the core accept, drop, or `usb_reset_device` this `usb_device`? `reset_resume` is a flag on RESET. |
+| Device state + ep0 | `enum` | `USBTRACE_EVT_ENUM` | Which enumeration milestone failed — state machine vs GET_DESCRIPTOR / SET_ADDRESS / SET_CONFIGURATION? |
+| Transfers | `urb` | `USBTRACE_EVT_URB` | What did the wire return, including the 8-byte setup (`bRequest` / `wValue`)? |
+
+`hub` records the child `usb_device` on the port when one is present; an empty
+port falls back to the hub device and still records `portnum`. Missing kprobe
+targets are autoload-filtered per program.
 
 ## Layout
 
