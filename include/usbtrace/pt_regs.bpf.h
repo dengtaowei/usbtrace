@@ -32,6 +32,8 @@ static __always_inline __u64 usbtrace_pt_parm(const struct pt_regs *ctx, int idx
 #define USBTRACE_PT_PARM2(ctx) ((unsigned long)usbtrace_pt_parm((ctx), 1))
 #define USBTRACE_PT_PARM3(ctx) ((unsigned long)usbtrace_pt_parm((ctx), 2))
 #define USBTRACE_PT_PARM4(ctx) ((unsigned long)usbtrace_pt_parm((ctx), 3))
+/* kretprobe return: r0 / eax — same slot as PARM1. */
+#define USBTRACE_PT_RET(ctx) USBTRACE_PT_PARM1(ctx)
 
 #define USBTRACE_PTR_KEY(p) ((__u64)(__u32)(unsigned long)(p))
 
@@ -61,6 +63,8 @@ static __always_inline void *usbtrace_read_kptr(const void *addr)
 #define USBTRACE_PT_PARM2(ctx) ((unsigned long)PT_REGS_PARM2(ctx))
 #define USBTRACE_PT_PARM3(ctx) ((unsigned long)PT_REGS_PARM3(ctx))
 #define USBTRACE_PT_PARM4(ctx) ((unsigned long)PT_REGS_PARM4(ctx))
+/* kretprobe return: rax on x86_64, x0 on arm64 (not PARM1 on x86_64). */
+#define USBTRACE_PT_RET(ctx) ((unsigned long)PT_REGS_RC(ctx))
 
 #define USBTRACE_PTR_KEY(p) ((__u64)(unsigned long)(p))
 #define USBTRACE_KPTR(p) ((void *)(unsigned long)(p))

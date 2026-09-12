@@ -82,13 +82,12 @@ int on_new_device_exit(struct pt_regs *ctx)
 	__u64 id = bpf_get_current_pid_tgid();
 	__u64 *pud;
 	struct usb_device *udev;
-	/* ARM32: return value is r0 — same slot as PARM1. */
-	int ret = (int)USBTRACE_PT_PARM1(ctx);
+	int ret = (int)USBTRACE_PT_RET(ctx);
 
 	pud = bpf_map_lookup_elem(&new_dev_pending, &id);
 	if (!pud)
 		return 0;
-	udev = (struct usb_device *)(unsigned long)(__u32)(*pud);
+	udev = USBTRACE_KPTR((void *)(unsigned long)(*pud));
 	bpf_map_delete_elem(&new_dev_pending, &id);
 	if (ret < 0 || !udev)
 		return 0;
@@ -98,8 +97,8 @@ int on_new_device_exit(struct pt_regs *ctx)
 SEC("kprobe/usb_disconnect")
 int on_disconnect(struct pt_regs *ctx)
 {
-	__u32 r0 = (__u32)USBTRACE_PT_PARM1(ctx);
-	struct usb_device **pdev = (struct usb_device **)(unsigned long)r0;
+	struct usb_device **pdev =
+		USBTRACE_KPTR((void *)USBTRACE_PT_PARM1(ctx));
 	struct usb_device *udev;
 
 	if (!pdev)
